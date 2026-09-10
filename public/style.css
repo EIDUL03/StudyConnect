@@ -9,35 +9,47 @@ body {
   color: #222;
 }
 
+
+/* ================================= */
+/* LOBBY */
+/* ================================= */
+
 .container {
   max-width: 800px;
-  margin: 30px auto;
-  padding: 15px;
+  margin: 40px auto;
+  padding: 20px;
   text-align: center;
 }
 
-h1 {
-  font-size: 32px;
+.container h1 {
+  font-size: 36px;
   margin-bottom: 5px;
 }
 
-.card {
-  background: white;
-  max-width: 420px;
-  margin: 20px auto;
-  padding: 20px;
-  border-radius: 12px;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+.container > p {
+  color: #666;
 }
 
-input {
+
+.card {
+  background: white;
+  max-width: 430px;
+  margin: 25px auto;
+  padding: 25px;
+  border-radius: 12px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.1);
+}
+
+
+input[type="text"] {
   width: 100%;
-  padding: 11px;
-  margin: 6px 0;
+  padding: 12px;
+  margin: 7px 0;
   border: 1px solid #ccc;
   border-radius: 7px;
   font-size: 15px;
 }
+
 
 button {
   width: 100%;
@@ -51,53 +63,427 @@ button {
   cursor: pointer;
 }
 
+button:hover {
+  opacity: 0.85;
+}
+
+
 hr {
-  margin: 18px 0;
+  margin: 20px 0;
   border: none;
   border-top: 1px solid #ddd;
 }
 
-.room {
-  max-width: 750px;
-  margin: 20px auto;
-}
 
-.videos {
-  display: flex;
-  justify-content: center;
-  gap: 15px;
-  flex-wrap: wrap;
-}
-
-.videos > div {
-  width: 320px;
-}
-
-video {
-  width: 100%;
-  height: 190px;
-  object-fit: cover;
-  background: #111;
-  border-radius: 8px;
-}
-
-h3 {
-  margin: 5px;
-  font-size: 16px;
-}
-
-#roomStatus {
-  margin-top: 15px;
+#message {
+  color: #c62828;
   font-weight: bold;
 }
 
-@media (max-width: 700px) {
-  .videos > div {
-    width: 100%;
-    max-width: 320px;
+
+
+/* ================================= */
+/* STUDY ROOM */
+/* ================================= */
+
+.study-room {
+  min-height: 100vh;
+}
+
+
+/* ================================= */
+/* HEADER */
+/* ================================= */
+
+.room-header {
+  background: white;
+  padding: 15px 25px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #ddd;
+}
+
+
+.room-header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+
+.room-header p {
+  margin: 5px 0 0;
+  color: #666;
+}
+
+
+#userRole {
+  background: #222;
+  color: white;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+
+
+/* ================================= */
+/* ROOM LAYOUT */
+/* ================================= */
+
+.room-layout {
+  max-width: 1400px;
+  margin: 20px auto;
+  padding: 0 20px;
+
+  display: grid;
+
+  grid-template-columns:
+    minmax(0, 1fr)
+    300px;
+
+  gap: 20px;
+}
+
+
+.main-content {
+  min-width: 0;
+}
+
+
+.section-card {
+  background: white;
+  padding: 20px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+
+.section-card h2 {
+  margin-top: 0;
+}
+
+
+
+/* ================================= */
+/* VIDEO AREA */
+/* ================================= */
+
+.videos {
+  display: grid;
+
+  grid-template-columns:
+    repeat(2, minmax(0, 1fr));
+
+  gap: 15px;
+}
+
+
+.video-card h3 {
+  margin: 0 0 7px;
+  font-size: 15px;
+}
+
+
+video {
+  width: 100%;
+  height: 260px;
+
+  object-fit: cover;
+
+  background: #111;
+
+  border-radius: 9px;
+}
+
+
+#roomStatus {
+  margin-bottom: 0;
+  font-weight: bold;
+  color: #555;
+}
+
+
+
+/* ================================= */
+/* WHITEBOARD */
+/* ================================= */
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+
+.section-title h2 {
+  margin-bottom: 15px;
+}
+
+
+#whiteboardStatus {
+  background: #eee;
+  padding: 6px 10px;
+  border-radius: 15px;
+  font-size: 13px;
+}
+
+
+#whiteboard {
+  width: 100%;
+  height: auto;
+
+  display: block;
+
+  background: white;
+
+  border: 2px solid #ddd;
+
+  border-radius: 8px;
+
+  cursor: not-allowed;
+}
+
+
+#whiteboardMessage {
+  margin-bottom: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+
+
+/* ================================= */
+/* PARTICIPANTS PANEL */
+/* ================================= */
+
+.participants-panel {
+  background: white;
+
+  padding: 20px;
+
+  border-radius: 12px;
+
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.08);
+
+  height: fit-content;
+
+  position: sticky;
+  top: 20px;
+}
+
+
+.participants-panel h2 {
+  margin-top: 0;
+  margin-bottom: 5px;
+}
+
+
+#participantCount {
+  color: #666;
+  font-size: 14px;
+
+  border-bottom: 1px solid #ddd;
+
+  padding-bottom: 12px;
+}
+
+
+#participantsList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+
+
+/* ================================= */
+/* PARTICIPANT ITEM */
+/* ================================= */
+
+.participant {
+  border: 1px solid #ddd;
+
+  border-radius: 8px;
+
+  padding: 10px;
+
+  background: #fafafa;
+}
+
+
+.participant-name {
+  font-weight: bold;
+
+  margin-bottom: 8px;
+}
+
+
+.host-label {
+  font-size: 11px;
+
+  background: #222;
+
+  color: white;
+
+  padding: 3px 6px;
+
+  border-radius: 10px;
+
+  margin-left: 5px;
+}
+
+
+.participant-controls {
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 5px;
+}
+
+
+.participant-controls button {
+  width: 100%;
+
+  margin: 0;
+
+  padding: 7px;
+
+  font-size: 12px;
+}
+
+
+.permission-active {
+  background: #2e7d32;
+}
+
+
+.permission-off {
+  background: #777;
+}
+
+
+
+/* ================================= */
+/* STUDY MATERIAL */
+/* ================================= */
+
+#materialInput {
+  width: 100%;
+
+  padding: 8px;
+
+  margin-bottom: 5px;
+}
+
+
+#uploadButton {
+  max-width: 220px;
+}
+
+
+#uploadStatus {
+  color: #666;
+
+  font-size: 14px;
+}
+
+
+#materials {
+  margin-top: 15px;
+}
+
+
+.material-item {
+  border: 1px solid #ddd;
+
+  padding: 10px;
+
+  border-radius: 8px;
+
+  margin-top: 8px;
+}
+
+
+
+/* ================================= */
+/* MOBILE */
+/* ================================= */
+
+@media (max-width: 900px) {
+
+  .room-layout {
+
+    grid-template-columns: 1fr;
+
   }
 
-  video {
-    height: 180px;
+
+  .participants-panel {
+
+    position: static;
+
   }
+
+}
+
+
+@media (max-width: 650px) {
+
+  .room-header {
+
+    padding: 12px 15px;
+
+  }
+
+
+  .room-header h1 {
+
+    font-size: 20px;
+
+  }
+
+
+  .room-layout {
+
+    padding: 0 10px;
+
+    margin-top: 10px;
+
+  }
+
+
+  .section-card {
+
+    padding: 15px;
+
+  }
+
+
+  .videos {
+
+    grid-template-columns: 1fr;
+
+  }
+
+
+  video {
+
+    height: 220px;
+
+  }
+
+
+  #whiteboard {
+
+    min-height: 250px;
+
+  }
+
 }

@@ -1,59 +1,294 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
+
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
   <title>StudyConnect</title>
+
   <link rel="stylesheet" href="style.css">
+
 </head>
+
 
 <body>
 
-  <div class="container">
+
+  <!-- ================================= -->
+  <!-- LOBBY -->
+  <!-- ================================= -->
+
+  <div id="lobby" class="container">
 
     <h1>StudyConnect</h1>
+
     <p>Study together. Connect together.</p>
 
-    <div id="lobby" class="card">
+
+    <div class="card">
+
       <h2>Join a Study Room</h2>
 
-      <input id="name" type="text" placeholder="Enter your name">
 
-      <input id="roomCode" type="text" placeholder="Enter room code">
+      <input
+        id="name"
+        type="text"
+        maxlength="30"
+        placeholder="Enter your name"
+      >
 
-      <button onclick="joinRoom()">Join Room</button>
+
+      <input
+        id="roomCode"
+        type="text"
+        maxlength="5"
+        placeholder="Enter 5-digit room code"
+      >
+
+
+      <button onclick="joinRoom()">
+        Join Room
+      </button>
+
 
       <hr>
 
-      <button onclick="createRoom()">Create New Room</button>
+
+      <button onclick="createRoom()">
+        Create New Room
+      </button>
+
 
       <p id="message"></p>
-    </div>
-
-    <div id="room" class="room" style="display:none;">
-
-      <h2>Study Room</h2>
-
-      <div class="videos">
-        <div>
-          <h3>You</h3>
-          <video id="localVideo" autoplay muted playsinline></video>
-        </div>
-
-        <div>
-          <h3>Other Student</h3>
-          <video id="remoteVideo" autoplay playsinline></video>
-        </div>
-      </div>
-
-      <p id="roomStatus">Connecting...</p>
 
     </div>
 
   </div>
 
+
+
+  <!-- ================================= -->
+  <!-- STUDY ROOM -->
+  <!-- ================================= -->
+
+  <div
+    id="room"
+    class="study-room"
+    style="display:none;"
+  >
+
+
+    <!-- HEADER -->
+
+    <header class="room-header">
+
+      <div>
+
+        <h1>StudyConnect</h1>
+
+        <p>
+          Room Code:
+          <strong id="displayRoomCode">-----</strong>
+        </p>
+
+      </div>
+
+
+      <div id="userRole">
+        Student
+      </div>
+
+    </header>
+
+
+
+    <!-- MAIN AREA -->
+
+    <main class="room-layout">
+
+
+      <!-- ============================= -->
+      <!-- LEFT SIDE -->
+      <!-- ============================= -->
+
+      <section class="main-content">
+
+
+        <!-- VIDEO AREA -->
+
+        <div class="section-card">
+
+          <h2>Video Meeting</h2>
+
+
+          <div id="videos" class="videos">
+
+
+            <!-- YOUR VIDEO -->
+
+            <div class="video-card">
+
+              <h3>You</h3>
+
+              <video
+                id="localVideo"
+                autoplay
+                muted
+                playsinline
+              ></video>
+
+            </div>
+
+
+            <!-- REMOTE VIDEO -->
+
+            <div class="video-card">
+
+              <h3>Student</h3>
+
+              <video
+                id="remoteVideo"
+                autoplay
+                playsinline
+              ></video>
+
+            </div>
+
+
+          </div>
+
+
+          <p id="roomStatus">
+            Connecting...
+          </p>
+
+        </div>
+
+
+
+        <!-- ============================= -->
+        <!-- WHITEBOARD -->
+        <!-- ============================= -->
+
+        <div class="section-card">
+
+          <div class="section-title">
+
+            <h2>Shared Whiteboard</h2>
+
+            <span id="whiteboardStatus">
+              View only
+            </span>
+
+          </div>
+
+
+          <canvas
+            id="whiteboard"
+            width="900"
+            height="500"
+          ></canvas>
+
+
+          <p id="whiteboardMessage">
+            Only one student can write at a time.
+          </p>
+
+        </div>
+
+
+
+        <!-- ============================= -->
+        <!-- STUDY MATERIAL -->
+        <!-- ============================= -->
+
+        <div class="section-card">
+
+          <h2>Study Material</h2>
+
+
+          <div id="uploadArea">
+
+            <input
+              type="file"
+              id="materialInput"
+              accept="image/*,.pdf"
+            >
+
+
+            <button
+              id="uploadButton"
+              onclick="uploadMaterial()"
+            >
+              Upload Material
+            </button>
+
+          </div>
+
+
+          <p id="uploadStatus">
+            Upload permission is controlled by the host.
+          </p>
+
+
+          <div id="materials"></div>
+
+        </div>
+
+
+      </section>
+
+
+
+      <!-- ============================= -->
+      <!-- RIGHT SIDE — PARTICIPANTS -->
+      <!-- ============================= -->
+
+      <aside
+        id="participantsPanel"
+        class="participants-panel"
+      >
+
+        <h2>Participants</h2>
+
+
+        <p id="participantCount">
+          0 / 50
+        </p>
+
+
+        <div id="participantsList">
+
+          <!-- Participants will appear here -->
+
+        </div>
+
+      </aside>
+
+
+    </main>
+
+
+  </div>
+
+
+
+  <!-- SOCKET.IO -->
+
   <script src="/socket.io/socket.io.js"></script>
+
+
+  <!-- APP -->
+
   <script src="app.js"></script>
 
+
 </body>
+
 </html>
