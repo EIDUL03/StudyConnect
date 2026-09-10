@@ -13,9 +13,13 @@ let pendingCandidates = [];
 let participants = [];
 let whiteboardWriterId = null;
 
+let screenSharerId = null;
+let screenStream = null;
+let isScreenSharing = false;
+
 
 // =====================================
-// WEBRTC CONFIGURATION
+// WEBRTC
 // =====================================
 
 const configuration = {
@@ -53,13 +57,19 @@ async function startCamera() {
       });
 
 
-    document.getElementById("localVideo").srcObject =
-      localStream;
+    document.getElementById(
+      "localVideo"
+    ).srcObject = localStream;
 
 
-    console.log(
-      "Camera and microphone started."
-    );
+    // Make sure microphone starts enabled.
+    localStream
+      .getAudioTracks()
+      .forEach(track => {
+
+        track.enabled = true;
+
+      });
 
 
     return true;
@@ -69,7 +79,7 @@ async function startCamera() {
   catch (error) {
 
     console.error(
-      "Camera error:",
+      "Camera/microphone error:",
       error
     );
 
@@ -77,8 +87,7 @@ async function startCamera() {
     document.getElementById(
       "roomStatus"
     ).textContent =
-      "Camera/microphone permission denied.";
-
+      "Camera or microphone permission was denied.";
 
     return false;
 
@@ -88,74 +97,67 @@ async function startCamera() {
 
 
 // =====================================
-// CREATE WEBRTC CONNECTION
+// CREATE PEER CONNECTION
 // =====================================
 
 function createPeerConnection() {
 
   if (peerConnection) {
-
     return peerConnection;
-
   }
 
 
   peerConnection =
-    new RTCPeerConnection(configuration);
+    new RTCPeerConnection(
+      configuration
+    );
 
 
-  // Add local camera and microphone
   if (localStream) {
 
-    localStream.getTracks().forEach(
-      track => {
+    localStream
+      .getTracks()
+      .forEach(track => {
 
         peerConnection.addTrack(
           track,
           localStream
         );
 
-      }
-    );
+      });
 
   }
 
 
-  // Receive remote video/audio
-  peerConnection.ontrack = event => {
+  peerConnection.ontrack =
+    event => {
 
-    console.log(
-      "Remote stream received."
-    );
+      if (
+        event.streams &&
+        event.streams[0]
+      ) {
 
-
-    if (
-      event.streams &&
-      event.streams[0]
-    ) {
-
-      document.getElementById(
-        "remoteVideo"
-      ).srcObject =
-        event.streams[0];
+        document.getElementById(
+          "remoteVideo"
+        ).srcObject =
+          event.streams[0];
 
 
-      document.getElementById(
-        "remoteVideo"
-      ).play().catch(() => {});
+        document.getElementById(
+          "remoteVideo"
+        ).play().catch(() => {});
 
 
-      document.getElementById(
-        "roomStatus"
-      ).textContent =
-        "Other student connected.";
+        document.getElementById(
+          "roomStatus"
+        ).textContent =
+          "Connected — video and audio active.";
 
-    }
+      }
 
-  };
+    };
 
 
-  // ICE candidates
   peerConnection.onicecandidate =
     event => {
 
@@ -178,19 +180,12 @@ function createPeerConnection() {
     };
 
 
-  // Connection state
   peerConnection.onconnectionstatechange =
     () => {
 
       if (!peerConnection) {
         return;
       }
-
-
-      console.log(
-        "Connection state:",
-        peerConnection.connectionState
-      );
 
 
       if (
@@ -217,7 +212,7 @@ function createPeerConnection() {
         document.getElementById(
           "roomStatus"
         ).textContent =
-          "Connection lost. Trying to reconnect...";
+          "Connection lost. Waiting for reconnection...";
 
       }
 
@@ -253,8 +248,6 @@ function createRoom() {
   }
 
 
-  // The server will create the final
-  // unique 5-digit room code.
   socket.emit(
     "create-room",
     null,
@@ -317,6 +310,8 @@ socket.on(
 
 
     initializeWhiteboard();
+
+    createRoomControls();
 
   }
 );
@@ -402,16 +397,15 @@ async function joinRoom() {
 
 
   if (!started) {
-
     return;
-
   }
 
 
   initializeWhiteboard();
 
+  createRoomControls();
 
-  // Send name to server
+
   socket.emit(
     "join-room",
     roomCode,
@@ -464,36 +458,47 @@ socket.on(
   "room-state",
   state => {
 
-    console.log(
-      "Room state:",
-      state
-    );
-
-
     participants =
       state.participants || [];
 
 
     whiteboardWriterId =
-      state.whiteboardWriterId;
+      state.whiteboardWriterId || null;
 
 
-    // Find our own socket ID
-    const me =
+    screenSharerId =
+      state.screenSharerId || null;
+
+
+    // The server will send our ID.
+    // Until then, use the matching name
+    // as a fallback.
+    let me =
       participants.find(
         participant =>
-          participant.name === myName
+          participant.id === mySocketId
       );
 
 
-    if (me) {
+    if (!me) {
 
-      mySocketId = me.id;
+      me =
+        participants.find(
+          participant =>
+            participant.name === myName
+        );
 
     }
 
 
-    // Determine host
+    if (me) {
+
+      mySocketId =
+        me.id;
+
+    }
+
+
     isHost =
       state.hostId === mySocketId;
 
@@ -506,8 +511,9 @@ socket.on(
 
     updateParticipantList();
 
-
     updateWhiteboardPermission();
+
+    updateScreenShareButton();
 
   }
 );
@@ -589,12 +595,9 @@ function updateParticipantList() {
       }
 
 
-      item.appendChild(
-        name
-      );
+      item.appendChild(name);
 
 
-      // Only host gets management buttons
       if (
         isHost &&
         !participant.isHost
@@ -610,7 +613,7 @@ function updateParticipantList() {
           "participant-controls";
 
 
-        // Whiteboard button
+        // WHITEBOARD
         const whiteboardButton =
           document.createElement(
             "button"
@@ -644,7 +647,7 @@ function updateParticipantList() {
         );
 
 
-        // Audio button
+        // AUDIO
         const audioButton =
           document.createElement(
             "button"
@@ -679,7 +682,7 @@ function updateParticipantList() {
         );
 
 
-        // Upload button
+        // UPLOAD
         const uploadButton =
           document.createElement(
             "button"
@@ -714,6 +717,41 @@ function updateParticipantList() {
         );
 
 
+        // SCREEN SHARE
+        const screenButton =
+          document.createElement(
+            "button"
+          );
+
+
+        screenButton.textContent =
+          participant.canScreenShare
+            ? "Screen Share: Allowed"
+            : "Allow Screen Share";
+
+
+        screenButton.className =
+          participant.canScreenShare
+            ? "permission-active"
+            : "permission-off";
+
+
+        screenButton.onclick =
+          () => {
+
+            setScreenSharePermission(
+              participant.id,
+              !participant.canScreenShare
+            );
+
+          };
+
+
+        controls.appendChild(
+          screenButton
+        );
+
+
         item.appendChild(
           controls
         );
@@ -721,9 +759,7 @@ function updateParticipantList() {
       }
 
 
-      list.appendChild(
-        item
-      );
+      list.appendChild(item);
 
     }
   );
@@ -732,7 +768,7 @@ function updateParticipantList() {
 
 
 // =====================================
-// HOST: GIVE WHITEBOARD PERMISSION
+// WHITEBOARD PERMISSION
 // =====================================
 
 function giveWhiteboardPermission(
@@ -740,9 +776,7 @@ function giveWhiteboardPermission(
 ) {
 
   if (!isHost) {
-
     return;
-
   }
 
 
@@ -755,7 +789,7 @@ function giveWhiteboardPermission(
 
 
 // =====================================
-// HOST: AUDIO PERMISSION
+// AUDIO PERMISSION
 // =====================================
 
 function setAudioPermission(
@@ -764,9 +798,7 @@ function setAudioPermission(
 ) {
 
   if (!isHost) {
-
     return;
-
   }
 
 
@@ -774,9 +806,11 @@ function setAudioPermission(
     "set-audio-permission",
     {
 
-      targetId: targetId,
+      targetId:
+        targetId,
 
-      allowed: allowed
+      allowed:
+        allowed
 
     }
   );
@@ -785,7 +819,7 @@ function setAudioPermission(
 
 
 // =====================================
-// HOST: UPLOAD PERMISSION
+// UPLOAD PERMISSION
 // =====================================
 
 function setUploadPermission(
@@ -794,9 +828,7 @@ function setUploadPermission(
 ) {
 
   if (!isHost) {
-
     return;
-
   }
 
 
@@ -804,9 +836,41 @@ function setUploadPermission(
     "set-upload-permission",
     {
 
-      targetId: targetId,
+      targetId:
+        targetId,
 
-      allowed: allowed
+      allowed:
+        allowed
+
+    }
+  );
+
+}
+
+
+// =====================================
+// SCREEN SHARE PERMISSION
+// =====================================
+
+function setScreenSharePermission(
+  targetId,
+  allowed
+) {
+
+  if (!isHost) {
+    return;
+  }
+
+
+  socket.emit(
+    "set-screen-share-permission",
+    {
+
+      targetId:
+        targetId,
+
+      allowed:
+        allowed
 
     }
   );
@@ -823,24 +887,18 @@ socket.on(
   allowed => {
 
     if (!localStream) {
-
       return;
-
     }
 
 
-    const audioTracks =
-      localStream.getAudioTracks();
-
-
-    audioTracks.forEach(
-      track => {
+    localStream
+      .getAudioTracks()
+      .forEach(track => {
 
         track.enabled =
           allowed;
 
-      }
-    );
+      });
 
 
     const status =
@@ -849,19 +907,10 @@ socket.on(
       );
 
 
-    if (allowed) {
-
-      status.textContent =
-        "Host allowed your microphone.";
-
-    }
-
-    else {
-
-      status.textContent =
-        "Your microphone has been muted by the host.";
-
-    }
+    status.textContent =
+      allowed
+        ? "Host allowed your microphone."
+        : "Your microphone has been muted by the host.";
 
   }
 );
@@ -893,6 +942,11 @@ socket.on(
       );
 
 
+    if (!input || !button || !status) {
+      return;
+    }
+
+
     input.disabled =
       !allowed;
 
@@ -901,22 +955,218 @@ socket.on(
       !allowed;
 
 
-    if (allowed) {
-
-      status.textContent =
-        "Host allowed you to upload study material.";
-
-    }
-
-    else {
-
-      status.textContent =
-        "Upload permission is controlled by the host.";
-
-    }
+    status.textContent =
+      allowed
+        ? "Host allowed you to upload study material."
+        : "Upload permission is controlled by the host.";
 
   }
 );
+
+
+// =====================================
+// SCREEN SHARE PERMISSION RECEIVED
+// =====================================
+
+socket.on(
+  "screen-share-permission",
+  allowed => {
+
+    updateScreenShareButton();
+
+
+    document.getElementById(
+      "roomStatus"
+    ).textContent =
+      allowed
+        ? "Host allowed you to share your screen."
+        : "Host disabled your screen sharing.";
+
+  }
+);
+
+
+// =====================================
+// SCREEN SHARE BUTTON
+// =====================================
+
+function createRoomControls() {
+
+  if (
+    document.getElementById(
+      "studyConnectControls"
+    )
+  ) {
+
+    return;
+
+  }
+
+
+  const card =
+    document.createElement(
+      "div"
+    );
+
+
+  card.id =
+    "studyConnectControls";
+
+
+  card.className =
+    "section-card";
+
+
+  card.innerHTML = `
+
+    <div class="section-title">
+
+      <h2>Study Tools</h2>
+
+    </div>
+
+    <div
+      id="studyToolButtons"
+      style="
+        display:flex;
+        flex-wrap:wrap;
+        gap:10px;
+      "
+    >
+
+      <button
+        id="whiteboardToggleButton"
+        type="button"
+        onclick="toggleWhiteboard()"
+        style="
+          width:auto;
+          margin:0;
+          padding:10px 16px;
+          border-radius:14px;
+          background:linear-gradient(135deg,#007aff,#6255ff);
+          color:white;
+          font-weight:700;
+        "
+      >
+        Whiteboard
+      </button>
+
+
+      <button
+        id="screenShareButton"
+        type="button"
+        onclick="toggleScreenShare()"
+        style="
+          width:auto;
+          margin:0;
+          padding:10px 16px;
+          border-radius:14px;
+          background:linear-gradient(135deg,#7c4dff,#ff4f9a);
+          color:white;
+          font-weight:700;
+        "
+      >
+        Share Screen
+      </button>
+
+    </div>
+
+  `;
+
+
+  const mainContent =
+    document.querySelector(
+      ".main-content"
+    );
+
+
+  if (mainContent) {
+
+    mainContent.insertBefore(
+      card,
+      mainContent.firstChild
+    );
+
+  }
+
+
+  // Whiteboard starts closed.
+  const whiteboardCard =
+    document.getElementById(
+      "whiteboard"
+    )?.closest(
+      ".section-card"
+    );
+
+
+  if (whiteboardCard) {
+
+    whiteboardCard.style.display =
+      "none";
+
+  }
+
+
+  updateScreenShareButton();
+
+}
+
+
+// =====================================
+// WHITEBOARD SHOW / HIDE
+// =====================================
+
+function toggleWhiteboard() {
+
+  const canvasElement =
+    document.getElementById(
+      "whiteboard"
+    );
+
+
+  if (!canvasElement) {
+    return;
+  }
+
+
+  const whiteboardCard =
+    canvasElement.closest(
+      ".section-card"
+    );
+
+
+  if (!whiteboardCard) {
+    return;
+  }
+
+
+  const isHidden =
+    whiteboardCard.style.display ===
+    "none";
+
+
+  whiteboardCard.style.display =
+    isHidden
+      ? "block"
+      : "none";
+
+
+  const button =
+    document.getElementById(
+      "whiteboardToggleButton"
+    );
+
+
+  if (button) {
+
+    button.textContent =
+      isHidden
+        ? "Close Whiteboard"
+        : "Whiteboard";
+
+  }
+
+}
 
 
 // =====================================
@@ -941,9 +1191,7 @@ function initializeWhiteboard() {
 
 
   if (!canvas) {
-
     return;
-
   }
 
 
@@ -980,7 +1228,6 @@ function initializeWhiteboard() {
   updateWhiteboardPermission();
 
 
-  // Ask server for existing board
   socket.emit(
     "request-whiteboard-data"
   );
@@ -989,21 +1236,20 @@ function initializeWhiteboard() {
 
 
 // =====================================
-// CHECK WHITEBOARD PERMISSION
+// WHITEBOARD PERMISSION STATUS
 // =====================================
 
 function updateWhiteboardPermission() {
 
   if (!canvas) {
-
     return;
-
   }
 
 
   const allowed =
     isHost ||
-    whiteboardWriterId === mySocketId;
+    whiteboardWriterId ===
+      mySocketId;
 
 
   canvas.style.cursor =
@@ -1022,6 +1268,11 @@ function updateWhiteboardPermission() {
     document.getElementById(
       "whiteboardMessage"
     );
+
+
+  if (!status || !message) {
+    return;
+  }
 
 
   if (allowed) {
@@ -1057,13 +1308,12 @@ function startDrawing(event) {
 
   const allowed =
     isHost ||
-    whiteboardWriterId === mySocketId;
+    whiteboardWriterId ===
+      mySocketId;
 
 
   if (!allowed) {
-
     return;
-
   }
 
 
@@ -1093,21 +1343,18 @@ function startDrawing(event) {
 function draw(event) {
 
   if (!drawing) {
-
     return;
-
   }
 
 
   const allowed =
     isHost ||
-    whiteboardWriterId === mySocketId;
+    whiteboardWriterId ===
+      mySocketId;
 
 
   if (!allowed) {
-
     return;
-
   }
 
 
@@ -1146,27 +1393,23 @@ function draw(event) {
   ctx.stroke();
 
 
-  const drawingData = {
-
-    x1: lastX,
-
-    y1: lastY,
-
-    x2: x,
-
-    y2: y
-
-  };
-
-
   socket.emit(
     "whiteboard-draw",
-    drawingData
+    {
+
+      x1: lastX,
+
+      y1: lastY,
+
+      x2: x,
+
+      y2: y
+
+    }
   );
 
 
   lastX = x;
-
   lastY = y;
 
 }
@@ -1184,17 +1427,15 @@ function stopDrawing() {
 
 
 // =====================================
-// RECEIVE WHITEBOARD DRAWING
+// RECEIVE DRAWING
 // =====================================
 
 socket.on(
   "whiteboard-draw",
   data => {
 
-    if (!ctx) {
-
+    if (!ctx || !data) {
       return;
-
     }
 
 
@@ -1223,24 +1464,15 @@ socket.on(
 
 
 // =====================================
-// RECEIVE EXISTING WHITEBOARD
+// RECEIVE EXISTING BOARD
 // =====================================
 
 socket.on(
   "whiteboard-data",
   data => {
 
-    if (!ctx) {
-
+    if (!ctx || !Array.isArray(data)) {
       return;
-
-    }
-
-
-    if (!Array.isArray(data)) {
-
-      return;
-
     }
 
 
@@ -1275,6 +1507,454 @@ socket.on(
 
 
 // =====================================
+// SCREEN SHARE UI
+// =====================================
+
+function updateScreenShareButton() {
+
+  const button =
+    document.getElementById(
+      "screenShareButton"
+    );
+
+
+  if (!button) {
+    return;
+  }
+
+
+  const me =
+    participants.find(
+      participant =>
+        participant.id ===
+        mySocketId
+    );
+
+
+  const allowed =
+    isHost ||
+    Boolean(
+      me &&
+      me.canScreenShare
+    );
+
+
+  if (isScreenSharing) {
+
+    button.textContent =
+      "Stop Sharing";
+
+    button.style.background =
+      "linear-gradient(135deg,#ff375f,#ff6b6b)";
+
+    button.disabled =
+      false;
+
+    return;
+
+  }
+
+
+  if (!allowed) {
+
+    button.textContent =
+      "Screen Share Locked";
+
+    button.disabled =
+      true;
+
+    button.style.background =
+      "rgba(100,110,140,0.35)";
+
+    return;
+
+  }
+
+
+  button.textContent =
+    screenSharerId &&
+    screenSharerId !==
+      mySocketId
+      ? "Screen Busy"
+      : "Share Screen";
+
+
+  button.disabled =
+    Boolean(
+      screenSharerId &&
+      screenSharerId !==
+        mySocketId
+    );
+
+
+  button.style.background =
+    "linear-gradient(135deg,#7c4dff,#ff4f9a)";
+
+}
+
+
+// =====================================
+// START / STOP SCREEN SHARE
+// =====================================
+
+async function toggleScreenShare() {
+
+  if (isScreenSharing) {
+
+    stopScreenShare();
+
+    return;
+
+  }
+
+
+  await startScreenShare();
+
+}
+
+
+// =====================================
+// START SCREEN SHARE
+// =====================================
+
+async function startScreenShare() {
+
+  const me =
+    participants.find(
+      participant =>
+        participant.id ===
+        mySocketId
+    );
+
+
+  const allowed =
+    isHost ||
+    Boolean(
+      me &&
+      me.canScreenShare
+    );
+
+
+  if (!allowed) {
+
+    document.getElementById(
+      "roomStatus"
+    ).textContent =
+      "The host has not allowed screen sharing.";
+
+    return;
+
+  }
+
+
+  if (
+    screenSharerId &&
+    screenSharerId !==
+      mySocketId
+  ) {
+
+    document.getElementById(
+      "roomStatus"
+    ).textContent =
+      "Someone else is already sharing.";
+
+    return;
+
+  }
+
+
+  try {
+
+    screenStream =
+      await navigator.mediaDevices.getDisplayMedia({
+
+        video: true,
+
+        audio: true
+
+      });
+
+  }
+
+  catch (error) {
+
+    console.log(
+      "Screen sharing cancelled:",
+      error
+    );
+
+    return;
+
+  }
+
+
+  isScreenSharing = true;
+
+
+  socket.emit(
+    "start-screen-share"
+  );
+
+
+  // Put screen into local preview.
+  document.getElementById(
+    "localVideo"
+  ).srcObject =
+    screenStream;
+
+
+  // Replace camera track in WebRTC.
+  if (peerConnection) {
+
+    const videoTrack =
+      screenStream.getVideoTracks()[0];
+
+
+    const sender =
+      peerConnection
+        .getSenders()
+        .find(
+          item =>
+            item.track &&
+            item.track.kind ===
+              "video"
+        );
+
+
+    if (sender) {
+
+      await sender.replaceTrack(
+        videoTrack
+      );
+
+    }
+
+  }
+
+
+  videoTrackEndedHandler();
+
+
+  updateScreenShareButton();
+
+
+  document.getElementById(
+    "roomStatus"
+  ).textContent =
+    "You are sharing your screen.";
+
+}
+
+
+// =====================================
+// SCREEN TRACK ENDED
+// =====================================
+
+function videoTrackEndedHandler() {
+
+  if (!screenStream) {
+    return;
+  }
+
+
+  const track =
+    screenStream.getVideoTracks()[0];
+
+
+  if (!track) {
+    return;
+  }
+
+
+  track.onended =
+    () => {
+
+      if (isScreenSharing) {
+
+        stopScreenShare();
+
+      }
+
+    };
+
+}
+
+
+// =====================================
+// STOP SCREEN SHARE
+// =====================================
+
+async function stopScreenShare() {
+
+  if (!isScreenSharing) {
+    return;
+  }
+
+
+  isScreenSharing = false;
+
+
+  if (screenStream) {
+
+    screenStream
+      .getTracks()
+      .forEach(track => {
+
+        track.stop();
+
+      });
+
+  }
+
+
+  screenStream = null;
+
+
+  // Restore camera.
+  if (localStream) {
+
+    const cameraTrack =
+      localStream.getVideoTracks()[0];
+
+
+    if (cameraTrack) {
+
+      if (peerConnection) {
+
+        const sender =
+          peerConnection
+            .getSenders()
+            .find(
+              item =>
+                item.track &&
+                item.track.kind ===
+                  "video"
+            );
+
+
+        if (sender) {
+
+          await sender.replaceTrack(
+            cameraTrack
+          );
+
+        }
+
+      }
+
+
+      document.getElementById(
+        "localVideo"
+      ).srcObject =
+        localStream;
+
+    }
+
+  }
+
+
+  socket.emit(
+    "stop-screen-share"
+  );
+
+
+  updateScreenShareButton();
+
+
+  document.getElementById(
+    "roomStatus"
+  ).textContent =
+    "Screen sharing stopped.";
+
+}
+
+
+// =====================================
+// SCREEN SHARE STARTED
+// =====================================
+
+socket.on(
+  "screen-share-started",
+  data => {
+
+    if (!data) {
+      return;
+    }
+
+
+    screenSharerId =
+      data.userId;
+
+
+    updateScreenShareButton();
+
+
+    if (
+      data.userId ===
+      mySocketId
+    ) {
+
+      return;
+
+    }
+
+
+    document.getElementById(
+      "roomStatus"
+    ).textContent =
+      data.userName +
+      " is sharing their screen.";
+
+  }
+);
+
+
+// =====================================
+// SCREEN SHARE STOPPED
+// =====================================
+
+socket.on(
+  "screen-share-stopped",
+  data => {
+
+    if (
+      data &&
+      screenSharerId ===
+        data.userId
+    ) {
+
+      screenSharerId =
+        null;
+
+    }
+
+
+    updateScreenShareButton();
+
+  }
+);
+
+
+// =====================================
+// SCREEN SHARE ERROR
+// =====================================
+
+socket.on(
+  "screen-share-error",
+  message => {
+
+    document.getElementById(
+      "roomStatus"
+    ).textContent =
+      message;
+
+    updateScreenShareButton();
+
+  }
+);
+
+
+// =====================================
 // NEW HOST
 // =====================================
 
@@ -1283,22 +1963,24 @@ socket.on(
   data => {
 
     if (!data) {
-
       return;
-
     }
 
 
-    if (data.hostId === mySocketId) {
+    isHost =
+      data.hostId ===
+      mySocketId;
 
-      isHost = true;
+
+    document.getElementById(
+      "userRole"
+    ).textContent =
+      isHost
+        ? "HOST"
+        : "STUDENT";
 
 
-      document.getElementById(
-        "userRole"
-      ).textContent =
-        "HOST";
-
+    if (isHost) {
 
       document.getElementById(
         "roomStatus"
@@ -1307,17 +1989,12 @@ socket.on(
 
     }
 
-    else {
 
-      isHost = false;
+    updateParticipantList();
 
+    updateWhiteboardPermission();
 
-      document.getElementById(
-        "userRole"
-      ).textContent =
-        "STUDENT";
-
-    }
+    updateScreenShareButton();
 
   }
 );
@@ -1330,11 +2007,6 @@ socket.on(
 socket.on(
   "user-joined",
   async () => {
-
-    console.log(
-      "Other student joined."
-    );
-
 
     document.getElementById(
       "roomStatus"
@@ -1349,9 +2021,7 @@ socket.on(
 
 
       if (!started) {
-
         return;
-
       }
 
     }
@@ -1361,13 +2031,7 @@ socket.on(
       createPeerConnection();
 
 
-    // Host creates offer
     if (isHost) {
-
-      console.log(
-        "Creating WebRTC offer..."
-      );
-
 
       const offer =
         await pc.createOffer();
@@ -1382,7 +2046,8 @@ socket.on(
         "signal",
         {
 
-          room: roomCode,
+          room:
+            roomCode,
 
           offer:
             pc.localDescription
@@ -1404,10 +2069,9 @@ socket.on(
   "signal",
   async data => {
 
-    console.log(
-      "Signal received:",
-      data
-    );
+    if (!data) {
+      return;
+    }
 
 
     if (!localStream) {
@@ -1417,9 +2081,7 @@ socket.on(
 
 
       if (!started) {
-
         return;
-
       }
 
     }
@@ -1429,147 +2091,128 @@ socket.on(
       createPeerConnection();
 
 
-    // =================================
-    // RECEIVED OFFER
-    // =================================
+    try {
 
-    if (data.offer) {
+      if (data.offer) {
 
-      console.log(
-        "Offer received."
-      );
-
-
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.offer
-        )
-      );
-
-
-      for (
-        const candidate
-        of pendingCandidates
-      ) {
-
-        try {
-
-          await pc.addIceCandidate(
-            candidate
-          );
-
-        }
-
-        catch (error) {
-
-          console.error(
-            "ICE candidate error:",
-            error
-          );
-
-        }
-
-      }
-
-
-      pendingCandidates = [];
-
-
-      const answer =
-        await pc.createAnswer();
-
-
-      await pc.setLocalDescription(
-        answer
-      );
-
-
-      socket.emit(
-        "signal",
-        {
-
-          room: roomCode,
-
-          answer:
-            pc.localDescription
-
-        }
-      );
-
-    }
-
-
-    // =================================
-    // RECEIVED ANSWER
-    // =================================
-
-    if (data.answer) {
-
-      console.log(
-        "Answer received."
-      );
-
-
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.answer
-        )
-      );
-
-
-      for (
-        const candidate
-        of pendingCandidates
-      ) {
-
-        try {
-
-          await pc.addIceCandidate(
-            candidate
-          );
-
-        }
-
-        catch (error) {
-
-          console.error(
-            "ICE candidate error:",
-            error
-          );
-
-        }
-
-      }
-
-
-      pendingCandidates = [];
-
-    }
-
-
-    // =================================
-    // RECEIVED ICE CANDIDATE
-    // =================================
-
-    if (data.candidate) {
-
-      const candidate =
-        new RTCIceCandidate(
-          data.candidate
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.offer
+          )
         );
 
 
-      if (!pc.remoteDescription) {
+        for (
+          const candidate
+          of pendingCandidates
+        ) {
 
-        pendingCandidates.push(
-          candidate
+          try {
+
+            await pc.addIceCandidate(
+              candidate
+            );
+
+          }
+
+          catch (error) {
+
+            console.error(
+              "ICE error:",
+              error
+            );
+
+          }
+
+        }
+
+
+        pendingCandidates = [];
+
+
+        const answer =
+          await pc.createAnswer();
+
+
+        await pc.setLocalDescription(
+          answer
+        );
+
+
+        socket.emit(
+          "signal",
+          {
+
+            room:
+              roomCode,
+
+            answer:
+              pc.localDescription
+
+          }
         );
 
       }
 
-      else {
 
-        try {
+      if (data.answer) {
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.answer
+          )
+        );
+
+
+        for (
+          const candidate
+          of pendingCandidates
+        ) {
+
+          try {
+
+            await pc.addIceCandidate(
+              candidate
+            );
+
+          }
+
+          catch (error) {
+
+            console.error(
+              "ICE error:",
+              error
+            );
+
+          }
+
+        }
+
+
+        pendingCandidates = [];
+
+      }
+
+
+      if (data.candidate) {
+
+        const candidate =
+          new RTCIceCandidate(
+            data.candidate
+          );
+
+
+        if (
+          !pc.remoteDescription
+        ) {
+
+          pendingCandidates.push(
+            candidate
+          );
+
+        }
+
+        else {
 
           await pc.addIceCandidate(
             candidate
@@ -1577,16 +2220,16 @@ socket.on(
 
         }
 
-        catch (error) {
-
-          console.error(
-            "ICE candidate error:",
-            error
-          );
-
-        }
-
       }
+
+    }
+
+    catch (error) {
+
+      console.error(
+        "WebRTC signaling error:",
+        error
+      );
 
     }
 
@@ -1613,6 +2256,7 @@ function uploadMaterial() {
 
 
   if (
+    !input ||
     !input.files ||
     input.files.length === 0
   ) {
@@ -1629,10 +2273,159 @@ function uploadMaterial() {
     input.files[0];
 
 
+  const allowed =
+    file.type.startsWith(
+      "image/"
+    ) ||
+    file.type ===
+      "application/pdf";
+
+
+  if (!allowed) {
+
+    status.textContent =
+      "Only images and PDF files are allowed.";
+
+    return;
+
+  }
+
+
+  // The browser file picker is now
+  // actually opened by the input.
   status.textContent =
-    "File selected: " +
-    file.name +
-    ". Upload system will be connected in the next stage.";
+    "Selected: " +
+    file.name;
+
+
+  // Preview images locally.
+  if (
+    file.type.startsWith(
+      "image/"
+    )
+  ) {
+
+    const reader =
+      new FileReader();
+
+
+    reader.onload =
+      event => {
+
+        const wrapper =
+          document.createElement(
+            "div"
+          );
+
+
+        wrapper.className =
+          "material-item";
+
+
+        const image =
+          document.createElement(
+            "img"
+          );
+
+
+        image.src =
+          event.target.result;
+
+
+        image.style.maxWidth =
+          "100%";
+
+
+        image.style.maxHeight =
+          "500px";
+
+
+        image.style.borderRadius =
+          "12px";
+
+
+        wrapper.appendChild(
+          image
+        );
+
+
+        document
+          .getElementById(
+            "materials"
+          )
+          .appendChild(
+            wrapper
+          );
+
+      };
+
+
+    reader.readAsDataURL(
+      file
+    );
+
+  }
+
+
+  // Preview PDF locally.
+  if (
+    file.type ===
+    "application/pdf"
+  ) {
+
+    const url =
+      URL.createObjectURL(
+        file
+      );
+
+
+    const wrapper =
+      document.createElement(
+        "div"
+      );
+
+
+    wrapper.className =
+      "material-item";
+
+
+    const link =
+      document.createElement(
+        "a"
+      );
+
+
+    link.href =
+      url;
+
+
+    link.target =
+      "_blank";
+
+
+    link.textContent =
+      "Open " +
+      file.name;
+
+
+    link.style.fontWeight =
+      "700";
+
+
+    wrapper.appendChild(
+      link
+    );
+
+
+    document
+      .getElementById(
+        "materials"
+      )
+      .appendChild(
+        wrapper
+      );
+
+  }
 
 }
 
@@ -1645,11 +2438,6 @@ socket.on(
   "user-left",
   () => {
 
-    console.log(
-      "Student left."
-    );
-
-
     document.getElementById(
       "remoteVideo"
     ).srcObject =
@@ -1660,7 +2448,8 @@ socket.on(
 
       peerConnection.close();
 
-      peerConnection = null;
+      peerConnection =
+        null;
 
     }
 

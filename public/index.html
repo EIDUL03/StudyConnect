@@ -10,6 +10,11 @@
     content="width=device-width, initial-scale=1.0"
   >
 
+  <meta
+    name="theme-color"
+    content="#007aff"
+  >
+
   <title>StudyConnect</title>
 
   <link rel="stylesheet" href="style.css">
@@ -28,7 +33,9 @@
 
     <h1>StudyConnect</h1>
 
-    <p>Study together. Connect together.</p>
+    <p>
+      Study together. Connect together.
+    </p>
 
 
     <div class="card">
@@ -40,7 +47,8 @@
         id="name"
         type="text"
         maxlength="30"
-        placeholder="Enter your name"
+        placeholder="Your name"
+        autocomplete="name"
       >
 
 
@@ -48,7 +56,8 @@
         id="roomCode"
         type="text"
         maxlength="5"
-        placeholder="Enter 5-digit room code"
+        inputmode="numeric"
+        placeholder="5-digit room code"
       >
 
 
@@ -84,7 +93,9 @@
   >
 
 
+    <!-- ================================= -->
     <!-- HEADER -->
+    <!-- ================================= -->
 
     <header class="room-header">
 
@@ -101,33 +112,44 @@
 
 
       <div id="userRole">
-        Student
+        STUDENT
       </div>
 
     </header>
 
 
 
-    <!-- MAIN AREA -->
+    <!-- ================================= -->
+    <!-- MAIN ROOM -->
+    <!-- ================================= -->
 
     <main class="room-layout">
 
 
-      <!-- ============================= -->
-      <!-- LEFT SIDE -->
-      <!-- ============================= -->
+      <!-- ================================= -->
+      <!-- MAIN CONTENT -->
+      <!-- ================================= -->
 
       <section class="main-content">
 
 
-        <!-- VIDEO AREA -->
+        <!-- ================================= -->
+        <!-- VIDEO MEETING -->
+        <!-- ================================= -->
 
         <div class="section-card">
 
-          <h2>Video Meeting</h2>
+          <div class="section-title">
+
+            <h2>Video Meeting</h2>
+
+          </div>
 
 
-          <div id="videos" class="videos">
+          <div
+            id="videos"
+            class="videos"
+          >
 
 
             <!-- YOUR VIDEO -->
@@ -172,9 +194,9 @@
 
 
 
-        <!-- ============================= -->
+        <!-- ================================= -->
         <!-- WHITEBOARD -->
-        <!-- ============================= -->
+        <!-- ================================= -->
 
         <div class="section-card">
 
@@ -204,9 +226,9 @@
 
 
 
-        <!-- ============================= -->
+        <!-- ================================= -->
         <!-- STUDY MATERIAL -->
-        <!-- ============================= -->
+        <!-- ================================= -->
 
         <div class="section-card">
 
@@ -246,9 +268,9 @@
 
 
 
-      <!-- ============================= -->
-      <!-- RIGHT SIDE — PARTICIPANTS -->
-      <!-- ============================= -->
+      <!-- ================================= -->
+      <!-- PARTICIPANTS -->
+      <!-- ================================= -->
 
       <aside
         id="participantsPanel"
@@ -265,7 +287,7 @@
 
         <div id="participantsList">
 
-          <!-- Participants will appear here -->
+          <!-- Participants appear here -->
 
         </div>
 
@@ -279,12 +301,16 @@
 
 
 
+  <!-- ================================= -->
   <!-- SOCKET.IO -->
+  <!-- ================================= -->
 
   <script src="/socket.io/socket.io.js"></script>
 
 
+  <!-- ================================= -->
   <!-- APP -->
+  <!-- ================================= -->
 
   <script src="app.js"></script>
 
