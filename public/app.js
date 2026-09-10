@@ -9,6 +9,7 @@ let mySocketId = "";
 let isHost = false;
 
 let pendingCandidates = [];
+let remoteDescriptionSet = false;
 
 let participants = [];
 let whiteboardWriterId = null;
@@ -19,7 +20,7 @@ let isScreenSharing = false;
 
 
 // =====================================
-// WEBRTC
+// WEBRTC CONFIGURATION
 // =====================================
 
 const configuration = {
@@ -32,11 +33,41 @@ const configuration = {
 
     {
       urls: "stun:stun1.l.google.com:19302"
+    },
+
+    {
+      urls: "stun:stun2.l.google.com:19302"
+    },
+
+    {
+      urls: "stun:stun.cloudflare.com:3478"
     }
 
-  ]
+  ],
+
+  iceCandidatePoolSize: 10,
+
+  bundlePolicy: "max-bundle",
+
+  rtcpMuxPolicy: "require"
 
 };
+
+
+// =====================================
+// HELPER
+// =====================================
+
+function setStatus(message) {
+
+  const status =
+    document.getElementById("roomStatus");
+
+  if (status) {
+    status.textContent = message;
+  }
+
+}
 
 
 // =====================================
@@ -46,6 +77,18 @@ const configuration = {
 async function startCamera() {
 
   try {
+
+    if (!navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia) {
+
+      setStatus(
+        "Camera and microphone are not supported by this browser."
+      );
+
+      return false;
+
+    }
+
 
     localStream =
       await navigator.mediaDevices.getUserMedia({
@@ -57,12 +100,24 @@ async function startCamera() {
       });
 
 
-    document.getElementById(
-      "localVideo"
-    ).srcObject = localStream;
+    const localVideo =
+      document.getElementById("localVideo");
 
 
-    // Make sure microphone starts enabled.
+    if (localVideo) {
+
+      localVideo.srcObject =
+        localStream;
+
+      localVideo.muted = true;
+
+      localVideo.playsInline = true;
+
+      localVideo.play().catch(() => {});
+
+    }
+
+
     localStream
       .getAudioTracks()
       .forEach(track => {
@@ -84,10 +139,9 @@ async function startCamera() {
     );
 
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "Camera or microphone permission was denied.";
+    setStatus(
+      "Camera or microphone permission was denied."
+    );
 
     return false;
 
@@ -107,11 +161,25 @@ function createPeerConnection() {
   }
 
 
+  console.log(
+    "Creating WebRTC peer connection..."
+  );
+
+
   peerConnection =
     new RTCPeerConnection(
       configuration
     );
 
+
+  remoteDescriptionSet = false;
+
+  pendingCandidates = [];
+
+
+  // -----------------------------------
+  // ADD LOCAL MEDIA
+  // -----------------------------------
 
   if (localStream) {
 
@@ -129,45 +197,76 @@ function createPeerConnection() {
   }
 
 
+  // -----------------------------------
+  // RECEIVE REMOTE MEDIA
+  // -----------------------------------
+
   peerConnection.ontrack =
     event => {
+
+      console.log(
+        "Remote track received:",
+        event.track.kind
+      );
+
 
       if (
         event.streams &&
         event.streams[0]
       ) {
 
-        document.getElementById(
-          "remoteVideo"
-        ).srcObject =
-          event.streams[0];
+        const remoteVideo =
+          document.getElementById(
+            "remoteVideo"
+          );
 
 
-        document.getElementById(
-          "remoteVideo"
-        ).play().catch(() => {});
+        if (remoteVideo) {
+
+          remoteVideo.srcObject =
+            event.streams[0];
+
+          remoteVideo.autoplay = true;
+
+          remoteVideo.playsInline = true;
+
+          remoteVideo
+            .play()
+            .catch(() => {});
+
+        }
 
 
-        document.getElementById(
-          "roomStatus"
-        ).textContent =
-          "Connected — video and audio active.";
+        setStatus(
+          "Connected — video and audio active."
+        );
 
       }
 
     };
 
 
+  // -----------------------------------
+  // ICE CANDIDATES
+  // -----------------------------------
+
   peerConnection.onicecandidate =
     event => {
 
       if (event.candidate) {
 
+        console.log(
+          "Sending ICE candidate:",
+          event.candidate.candidate
+        );
+
+
         socket.emit(
           "signal",
           {
 
-            room: roomCode,
+            room:
+              roomCode,
 
             candidate:
               event.candidate
@@ -180,6 +279,102 @@ function createPeerConnection() {
     };
 
 
+  // -----------------------------------
+  // ICE GATHERING STATE
+  // -----------------------------------
+
+  peerConnection.onicegatheringstatechange =
+    () => {
+
+      console.log(
+        "ICE gathering:",
+        peerConnection.iceGatheringState
+      );
+
+    };
+
+
+  // -----------------------------------
+  // ICE CONNECTION STATE
+  // -----------------------------------
+
+  peerConnection.oniceconnectionstatechange =
+    async () => {
+
+      if (!peerConnection) {
+        return;
+      }
+
+
+      const state =
+        peerConnection.iceConnectionState;
+
+
+      console.log(
+        "ICE connection state:",
+        state
+      );
+
+
+      if (state === "checking") {
+
+        setStatus(
+          "Connecting devices..."
+        );
+
+      }
+
+
+      if (state === "connected" ||
+          state === "completed") {
+
+        setStatus(
+          "Connected — video and audio active."
+        );
+
+      }
+
+
+      if (state === "disconnected") {
+
+        setStatus(
+          "Connection interrupted. Trying to reconnect..."
+        );
+
+      }
+
+
+      if (state === "failed") {
+
+        setStatus(
+          "Connection failed. Trying another connection path..."
+        );
+
+
+        try {
+
+          await restartIce();
+
+        }
+
+        catch (error) {
+
+          console.error(
+            "ICE restart failed:",
+            error
+          );
+
+        }
+
+      }
+
+    };
+
+
+  // -----------------------------------
+  // PEER CONNECTION STATE
+  // -----------------------------------
+
   peerConnection.onconnectionstatechange =
     () => {
 
@@ -188,38 +383,138 @@ function createPeerConnection() {
       }
 
 
-      if (
-        peerConnection.connectionState ===
-        "connected"
-      ) {
+      const state =
+        peerConnection.connectionState;
 
-        document.getElementById(
-          "roomStatus"
-        ).textContent =
-          "Connected — video and audio active.";
+
+      console.log(
+        "Peer connection state:",
+        state
+      );
+
+
+      if (state === "connecting") {
+
+        setStatus(
+          "Connecting video and audio..."
+        );
 
       }
 
 
-      if (
-        peerConnection.connectionState ===
-          "disconnected" ||
+      if (state === "connected") {
 
-        peerConnection.connectionState ===
-          "failed"
-      ) {
+        setStatus(
+          "Connected — video and audio active."
+        );
 
-        document.getElementById(
-          "roomStatus"
-        ).textContent =
-          "Connection lost. Waiting for reconnection...";
+      }
+
+
+      if (state === "disconnected") {
+
+        setStatus(
+          "Connection interrupted. Reconnecting..."
+        );
+
+      }
+
+
+      if (state === "failed") {
+
+        setStatus(
+          "Connection failed. Retrying..."
+        );
 
       }
 
     };
 
 
+  // -----------------------------------
+  // NEGOTIATION NEEDED
+  // -----------------------------------
+
+  peerConnection.onnegotiationneeded =
+    () => {
+
+      console.log(
+        "WebRTC negotiation needed."
+      );
+
+    };
+
+
   return peerConnection;
+
+}
+
+
+// =====================================
+// ICE RESTART
+// =====================================
+
+async function restartIce() {
+
+  if (!peerConnection) {
+    return;
+  }
+
+
+  if (!isHost) {
+
+    console.log(
+      "Only host will initiate ICE restart."
+    );
+
+    return;
+
+  }
+
+
+  try {
+
+    console.log(
+      "Starting ICE restart..."
+    );
+
+
+    const offer =
+      await peerConnection.createOffer({
+
+        iceRestart: true
+
+      });
+
+
+    await peerConnection.setLocalDescription(
+      offer
+    );
+
+
+    socket.emit(
+      "signal",
+      {
+
+        room:
+          roomCode,
+
+        offer:
+          peerConnection.localDescription
+
+      }
+    );
+
+  }
+
+  catch (error) {
+
+    console.error(
+      "ICE restart error:",
+      error
+    );
+
+  }
 
 }
 
@@ -269,6 +564,9 @@ socket.on(
 
     isHost = true;
 
+    mySocketId =
+      socket.id;
+
 
     document.getElementById(
       "lobby"
@@ -294,10 +592,9 @@ socket.on(
       "HOST";
 
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "Room created. Waiting for students...";
+    setStatus(
+      "Room created. Starting camera..."
+    );
 
 
     alert(
@@ -361,6 +658,9 @@ async function joinRoom() {
 
   isHost = false;
 
+  mySocketId =
+    socket.id;
+
 
   document.getElementById(
     "lobby"
@@ -386,10 +686,9 @@ async function joinRoom() {
     "STUDENT";
 
 
-  document.getElementById(
-    "roomStatus"
-  ).textContent =
-    "Starting camera and microphone...";
+  setStatus(
+    "Starting camera and microphone..."
+  );
 
 
   const started =
@@ -413,10 +712,9 @@ async function joinRoom() {
   );
 
 
-  document.getElementById(
-    "roomStatus"
-  ).textContent =
-    "Joined room. Waiting for connection...";
+  setStatus(
+    "Joined room. Waiting for connection..."
+  );
 
 }
 
@@ -470,43 +768,42 @@ socket.on(
       state.screenSharerId || null;
 
 
-    // The server will send our ID.
-    // Until then, use the matching name
-    // as a fallback.
-    let me =
+    // Use the Socket.IO ID first.
+    mySocketId =
+      socket.id;
+
+
+    const me =
       participants.find(
         participant =>
-          participant.id === mySocketId
+          participant.id ===
+          mySocketId
       );
-
-
-    if (!me) {
-
-      me =
-        participants.find(
-          participant =>
-            participant.name === myName
-        );
-
-    }
 
 
     if (me) {
 
-      mySocketId =
+      isHost =
+        state.hostId ===
         me.id;
 
     }
 
+    else {
 
-    isHost =
-      state.hostId === mySocketId;
+      isHost =
+        state.hostId ===
+        socket.id;
+
+    }
 
 
     document.getElementById(
       "userRole"
     ).textContent =
-      isHost ? "HOST" : "STUDENT";
+      isHost
+        ? "HOST"
+        : "STUDENT";
 
 
     updateParticipantList();
@@ -535,6 +832,11 @@ function updateParticipantList() {
     document.getElementById(
       "participantCount"
     );
+
+
+  if (!list || !count) {
+    return;
+  }
 
 
   count.textContent =
@@ -595,7 +897,9 @@ function updateParticipantList() {
       }
 
 
-      item.appendChild(name);
+      item.appendChild(
+        name
+      );
 
 
       if (
@@ -613,7 +917,6 @@ function updateParticipantList() {
           "participant-controls";
 
 
-        // WHITEBOARD
         const whiteboardButton =
           document.createElement(
             "button"
@@ -647,7 +950,6 @@ function updateParticipantList() {
         );
 
 
-        // AUDIO
         const audioButton =
           document.createElement(
             "button"
@@ -682,7 +984,6 @@ function updateParticipantList() {
         );
 
 
-        // UPLOAD
         const uploadButton =
           document.createElement(
             "button"
@@ -717,7 +1018,6 @@ function updateParticipantList() {
         );
 
 
-        // SCREEN SHARE
         const screenButton =
           document.createElement(
             "button"
@@ -759,7 +1059,9 @@ function updateParticipantList() {
       }
 
 
-      list.appendChild(item);
+      list.appendChild(
+        item
+      );
 
     }
   );
@@ -901,16 +1203,11 @@ socket.on(
       });
 
 
-    const status =
-      document.getElementById(
-        "roomStatus"
-      );
-
-
-    status.textContent =
+    setStatus(
       allowed
         ? "Host allowed your microphone."
-        : "Your microphone has been muted by the host.";
+        : "Your microphone has been muted by the host."
+    );
 
   }
 );
@@ -975,19 +1272,18 @@ socket.on(
     updateScreenShareButton();
 
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
+    setStatus(
       allowed
         ? "Host allowed you to share your screen."
-        : "Host disabled your screen sharing.";
+        : "Host disabled your screen sharing."
+    );
 
   }
 );
 
 
 // =====================================
-// SCREEN SHARE BUTTON
+// STUDY TOOLS
 // =====================================
 
 function createRoomControls() {
@@ -1051,7 +1347,6 @@ function createRoomControls() {
         Whiteboard
       </button>
 
-
       <button
         id="screenShareButton"
         type="button"
@@ -1090,7 +1385,6 @@ function createRoomControls() {
   }
 
 
-  // Whiteboard starts closed.
   const whiteboardCard =
     document.getElementById(
       "whiteboard"
@@ -1410,6 +1704,7 @@ function draw(event) {
 
 
   lastX = x;
+
   lastY = y;
 
 }
@@ -1601,7 +1896,7 @@ async function toggleScreenShare() {
 
   if (isScreenSharing) {
 
-    stopScreenShare();
+    await stopScreenShare();
 
     return;
 
@@ -1637,10 +1932,9 @@ async function startScreenShare() {
 
   if (!allowed) {
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "The host has not allowed screen sharing.";
+    setStatus(
+      "The host has not allowed screen sharing."
+    );
 
     return;
 
@@ -1653,10 +1947,23 @@ async function startScreenShare() {
       mySocketId
   ) {
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "Someone else is already sharing.";
+    setStatus(
+      "Someone else is already sharing."
+    );
+
+    return;
+
+  }
+
+
+  if (
+    !navigator.mediaDevices ||
+    !navigator.mediaDevices.getDisplayMedia
+  ) {
+
+    setStatus(
+      "Screen sharing is not supported by this browser/device."
+    );
 
     return;
 
@@ -1696,18 +2003,25 @@ async function startScreenShare() {
   );
 
 
-  // Put screen into local preview.
-  document.getElementById(
-    "localVideo"
-  ).srcObject =
-    screenStream;
+  const localVideo =
+    document.getElementById(
+      "localVideo"
+    );
 
 
-  // Replace camera track in WebRTC.
+  if (localVideo) {
+
+    localVideo.srcObject =
+      screenStream;
+
+  }
+
+
   if (peerConnection) {
 
     const videoTrack =
-      screenStream.getVideoTracks()[0];
+      screenStream
+        .getVideoTracks()[0];
 
 
     const sender =
@@ -1721,7 +2035,7 @@ async function startScreenShare() {
         );
 
 
-    if (sender) {
+    if (sender && videoTrack) {
 
       await sender.replaceTrack(
         videoTrack
@@ -1734,14 +2048,12 @@ async function startScreenShare() {
 
   videoTrackEndedHandler();
 
-
   updateScreenShareButton();
 
 
-  document.getElementById(
-    "roomStatus"
-  ).textContent =
-    "You are sharing your screen.";
+  setStatus(
+    "You are sharing your screen."
+  );
 
 }
 
@@ -1758,7 +2070,8 @@ function videoTrackEndedHandler() {
 
 
   const track =
-    screenStream.getVideoTracks()[0];
+    screenStream
+      .getVideoTracks()[0];
 
 
   if (!track) {
@@ -1810,42 +2123,47 @@ async function stopScreenShare() {
   screenStream = null;
 
 
-  // Restore camera.
   if (localStream) {
 
     const cameraTrack =
-      localStream.getVideoTracks()[0];
+      localStream
+        .getVideoTracks()[0];
 
 
-    if (cameraTrack) {
+    if (cameraTrack &&
+        peerConnection) {
 
-      if (peerConnection) {
-
-        const sender =
-          peerConnection
-            .getSenders()
-            .find(
-              item =>
-                item.track &&
-                item.track.kind ===
-                  "video"
-            );
-
-
-        if (sender) {
-
-          await sender.replaceTrack(
-            cameraTrack
+      const sender =
+        peerConnection
+          .getSenders()
+          .find(
+            item =>
+              item.track &&
+              item.track.kind ===
+                "video"
           );
 
-        }
+
+      if (sender) {
+
+        await sender.replaceTrack(
+          cameraTrack
+        );
 
       }
 
+    }
 
+
+    const localVideo =
       document.getElementById(
         "localVideo"
-      ).srcObject =
+      );
+
+
+    if (localVideo) {
+
+      localVideo.srcObject =
         localStream;
 
     }
@@ -1861,10 +2179,9 @@ async function stopScreenShare() {
   updateScreenShareButton();
 
 
-  document.getElementById(
-    "roomStatus"
-  ).textContent =
-    "Screen sharing stopped.";
+  setStatus(
+    "Screen sharing stopped."
+  );
 
 }
 
@@ -1899,11 +2216,10 @@ socket.on(
     }
 
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
+    setStatus(
       data.userName +
-      " is sharing their screen.";
+      " is sharing their screen."
+    );
 
   }
 );
@@ -1943,10 +2259,10 @@ socket.on(
   "screen-share-error",
   message => {
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      message;
+    setStatus(
+      message
+    );
+
 
     updateScreenShareButton();
 
@@ -1982,10 +2298,9 @@ socket.on(
 
     if (isHost) {
 
-      document.getElementById(
-        "roomStatus"
-      ).textContent =
-        "You are now the host.";
+      setStatus(
+        "You are now the host."
+      );
 
     }
 
@@ -2008,10 +2323,9 @@ socket.on(
   "user-joined",
   async () => {
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "Student joined. Connecting...";
+    setStatus(
+      "Student joined. Establishing secure connection..."
+    );
 
 
     if (!localStream) {
@@ -2033,27 +2347,45 @@ socket.on(
 
     if (isHost) {
 
-      const offer =
-        await pc.createOffer();
+      try {
+
+        const offer =
+          await pc.createOffer();
 
 
-      await pc.setLocalDescription(
-        offer
-      );
+        await pc.setLocalDescription(
+          offer
+        );
 
 
-      socket.emit(
-        "signal",
-        {
+        socket.emit(
+          "signal",
+          {
 
-          room:
-            roomCode,
+            room:
+              roomCode,
 
-          offer:
-            pc.localDescription
+            offer:
+              pc.localDescription
 
-        }
-      );
+          }
+        );
+
+
+        console.log(
+          "Host offer sent."
+        );
+
+      }
+
+      catch (error) {
+
+        console.error(
+          "Offer creation failed:",
+          error
+        );
+
+      }
 
     }
 
@@ -2093,7 +2425,16 @@ socket.on(
 
     try {
 
+      // --------------------------------
+      // RECEIVED OFFER
+      // --------------------------------
+
       if (data.offer) {
+
+        console.log(
+          "Received WebRTC offer."
+        );
+
 
         await pc.setRemoteDescription(
           new RTCSessionDescription(
@@ -2102,32 +2443,11 @@ socket.on(
         );
 
 
-        for (
-          const candidate
-          of pendingCandidates
-        ) {
-
-          try {
-
-            await pc.addIceCandidate(
-              candidate
-            );
-
-          }
-
-          catch (error) {
-
-            console.error(
-              "ICE error:",
-              error
-            );
-
-          }
-
-        }
+        remoteDescriptionSet =
+          true;
 
 
-        pendingCandidates = [];
+        await processPendingCandidates();
 
 
         const answer =
@@ -2152,10 +2472,24 @@ socket.on(
           }
         );
 
+
+        console.log(
+          "Answer sent."
+        );
+
       }
 
 
+      // --------------------------------
+      // RECEIVED ANSWER
+      // --------------------------------
+
       if (data.answer) {
+
+        console.log(
+          "Received WebRTC answer."
+        );
+
 
         await pc.setRemoteDescription(
           new RTCSessionDescription(
@@ -2164,35 +2498,18 @@ socket.on(
         );
 
 
-        for (
-          const candidate
-          of pendingCandidates
-        ) {
-
-          try {
-
-            await pc.addIceCandidate(
-              candidate
-            );
-
-          }
-
-          catch (error) {
-
-            console.error(
-              "ICE error:",
-              error
-            );
-
-          }
-
-        }
+        remoteDescriptionSet =
+          true;
 
 
-        pendingCandidates = [];
+        await processPendingCandidates();
 
       }
 
+
+      // --------------------------------
+      // RECEIVED ICE CANDIDATE
+      // --------------------------------
 
       if (data.candidate) {
 
@@ -2202,9 +2519,12 @@ socket.on(
           );
 
 
-        if (
-          !pc.remoteDescription
-        ) {
+        if (!remoteDescriptionSet) {
+
+          console.log(
+            "Queueing ICE candidate."
+          );
+
 
           pendingCandidates.push(
             candidate
@@ -2214,9 +2534,27 @@ socket.on(
 
         else {
 
-          await pc.addIceCandidate(
-            candidate
-          );
+          try {
+
+            await pc.addIceCandidate(
+              candidate
+            );
+
+
+            console.log(
+              "ICE candidate added."
+            );
+
+          }
+
+          catch (error) {
+
+            console.error(
+              "ICE candidate error:",
+              error
+            );
+
+          }
 
         }
 
@@ -2231,10 +2569,61 @@ socket.on(
         error
       );
 
+
+      setStatus(
+        "WebRTC connection error. Retrying..."
+      );
+
     }
 
   }
 );
+
+
+// =====================================
+// PROCESS QUEUED ICE CANDIDATES
+// =====================================
+
+async function processPendingCandidates() {
+
+  if (!peerConnection) {
+    return;
+  }
+
+
+  if (!peerConnection.remoteDescription) {
+    return;
+  }
+
+
+  while (
+    pendingCandidates.length > 0
+  ) {
+
+    const candidate =
+      pendingCandidates.shift();
+
+
+    try {
+
+      await peerConnection.addIceCandidate(
+        candidate
+      );
+
+    }
+
+    catch (error) {
+
+      console.error(
+        "Queued ICE candidate error:",
+        error
+      );
+
+    }
+
+  }
+
+}
 
 
 // =====================================
@@ -2291,14 +2680,11 @@ function uploadMaterial() {
   }
 
 
-  // The browser file picker is now
-  // actually opened by the input.
   status.textContent =
     "Selected: " +
     file.name;
 
 
-  // Preview images locally.
   if (
     file.type.startsWith(
       "image/"
@@ -2349,13 +2735,19 @@ function uploadMaterial() {
         );
 
 
-        document
-          .getElementById(
+        const materials =
+          document.getElementById(
             "materials"
-          )
-          .appendChild(
+          );
+
+
+        if (materials) {
+
+          materials.appendChild(
             wrapper
           );
+
+        }
 
       };
 
@@ -2367,7 +2759,6 @@ function uploadMaterial() {
   }
 
 
-  // Preview PDF locally.
   if (
     file.type ===
     "application/pdf"
@@ -2417,13 +2808,19 @@ function uploadMaterial() {
     );
 
 
-    document
-      .getElementById(
+    const materials =
+      document.getElementById(
         "materials"
-      )
-      .appendChild(
+      );
+
+
+    if (materials) {
+
+      materials.appendChild(
         wrapper
       );
+
+    }
 
   }
 
@@ -2438,10 +2835,18 @@ socket.on(
   "user-left",
   () => {
 
-    document.getElementById(
-      "remoteVideo"
-    ).srcObject =
-      null;
+    const remoteVideo =
+      document.getElementById(
+        "remoteVideo"
+      );
+
+
+    if (remoteVideo) {
+
+      remoteVideo.srcObject =
+        null;
+
+    }
 
 
     if (peerConnection) {
@@ -2454,13 +2859,58 @@ socket.on(
     }
 
 
+    remoteDescriptionSet =
+      false;
+
+
     pendingCandidates = [];
 
 
-    document.getElementById(
-      "roomStatus"
-    ).textContent =
-      "Student left. Waiting...";
+    setStatus(
+      "Student left. Waiting for another student..."
+    );
+
+  }
+);
+
+
+// =====================================
+// SOCKET CONNECTED
+// =====================================
+
+socket.on(
+  "connect",
+  () => {
+
+    mySocketId =
+      socket.id;
+
+
+    console.log(
+      "Socket connected:",
+      mySocketId
+    );
+
+  }
+);
+
+
+// =====================================
+// SOCKET DISCONNECTED
+// =====================================
+
+socket.on(
+  "disconnect",
+  () => {
+
+    console.log(
+      "Socket disconnected."
+    );
+
+
+    setStatus(
+      "Server connection lost. Reconnecting..."
+    );
 
   }
 );
