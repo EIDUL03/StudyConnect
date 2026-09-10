@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyConnect</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <div class="container">
+
+    <h1>StudyConnect</h1>
+    <p>Study together. Connect together.</p>
+
+    <div id="lobby" class="card">
+      <h2>Join a Study Room</h2>
+
+      <input id="name" type="text" placeholder="Enter your name">
+
+      <input id="roomCode" type="text" placeholder="Enter room code">
+
+      <button onclick="joinRoom()">Join Room</button>
+
+      <hr>
+
+      <button onclick="createRoom()">Create New Room</button>
+
+      <p id="message"></p>
+    </div>
+
+    <div id="room" class="room" style="display:none;">
+
+      <h2>Study Room</h2>
+
+      <div class="videos">
+        <div>
+          <h3>You</h3>
+          <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+
+        <div>
+          <h3>Other Student</h3>
+          <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+      </div>
+
+      <p id="roomStatus">Connecting...</p>
+
+    </div>
+
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
