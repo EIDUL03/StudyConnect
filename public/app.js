@@ -64,7 +64,7 @@ async function startMedia() {
 
   } catch (error) {
 
-    console.error(error);
+    console.error("Media error:", error);
 
     setStatus(
       "Camera/microphone permission is required for video and audio."
@@ -93,7 +93,12 @@ $("createButton").onclick =
     myName =
       name.substring(0, 30);
 
-    await startMedia();
+    const mediaStarted =
+      await startMedia();
+
+    if (!mediaStarted) {
+      return;
+    }
 
     socket.emit(
       "create-room",
@@ -130,7 +135,12 @@ $("joinButton").onclick =
 
     roomCode = code;
 
-    await startMedia();
+    const mediaStarted =
+      await startMedia();
+
+    if (!mediaStarted) {
+      return;
+    }
 
     socket.emit(
       "join-room",
@@ -143,6 +153,7 @@ $("joinButton").onclick =
 $("roomCode").addEventListener(
   "input",
   () => {
+
     $("roomCode").value =
       $("roomCode").value
         .replace(/\D/g, "")
@@ -218,6 +229,7 @@ socket.on(
     updateScreenButton();
 
     if (state.whiteboard) {
+
       drawStoredBoard(
         state.whiteboard
       );
@@ -230,6 +242,7 @@ socket.on(
 
       state.materials.forEach(
         material => {
+
           displayMaterial(
             material,
             true
@@ -239,6 +252,15 @@ socket.on(
     }
 
     showRoom();
+
+    /*
+      IMPORTANT:
+      Make sure the current user creates
+      WebRTC connections to participants
+      who were already in the room.
+    */
+
+    connectToExistingParticipants();
   }
 );
 
@@ -425,6 +447,12 @@ function createPeer(
     return peers.get(peerId);
   }
 
+  console.log(
+    "Creating WebRTC peer:",
+    peerId,
+    peerName
+  );
+
   const pc =
     new RTCPeerConnection({
       iceServers: [
@@ -439,10 +467,26 @@ function createPeer(
       ]
     });
 
+  /*
+    Store extra WebRTC information directly
+    on the peer connection.
+  */
+
+  pc._peerId = peerId;
+  pc._peerName = peerName || "Student";
+  pc._candidateQueue = [];
+  pc._remoteDescriptionReady = false;
+  pc._offerStarted = false;
+
   peers.set(
     peerId,
     pc
   );
+
+
+  /* =========================
+     ADD LOCAL CAMERA + AUDIO
+  ========================= */
 
   if (localStream) {
 
@@ -450,12 +494,27 @@ function createPeer(
       .getTracks()
       .forEach(track => {
 
-        pc.addTrack(
-          track,
-          localStream
-        );
+        try {
+
+          pc.addTrack(
+            track,
+            localStream
+          );
+
+        } catch (error) {
+
+          console.error(
+            "Could not add local track:",
+            error
+          );
+        }
       });
   }
+
+
+  /* =========================
+     ICE CANDIDATES
+  ========================= */
 
   pc.onicecandidate =
     event => {
@@ -463,6 +522,11 @@ function createPeer(
       if (!event.candidate) {
         return;
       }
+
+      console.log(
+        "Sending ICE candidate to:",
+        peerId
+      );
 
       socket.emit(
         "signal",
@@ -476,8 +540,18 @@ function createPeer(
     };
 
 
+  /* =========================
+     REMOTE VIDEO + AUDIO
+  ========================= */
+
   pc.ontrack =
     event => {
+
+      console.log(
+        "Remote track received from:",
+        peerId,
+        event.track.kind
+      );
 
       let video =
         document.getElementById(
@@ -500,6 +574,16 @@ function createPeer(
 
         video.autoplay = true;
         video.playsInline = true;
+
+        /*
+          Important for mobile browsers:
+          allow the remote video to play inline.
+        */
+
+        video.setAttribute(
+          "playsinline",
+          ""
+        );
 
         const label =
           document.createElement("div");
@@ -531,16 +615,34 @@ function createPeer(
         video.srcObject =
           event.streams[0];
 
-        video.play().catch(() => {});
+        video.play()
+          .then(() => {
+            console.log(
+              "Remote video playing:",
+              peerId
+            );
+          })
+          .catch(error => {
+            console.error(
+              "Remote video play error:",
+              error
+            );
+          });
       }
     };
 
+
+  /* =========================
+     CONNECTION STATE
+  ========================= */
 
   pc.onconnectionstatechange =
     () => {
 
       console.log(
+        "Peer:",
         peerId,
+        "Connection:",
         pc.connectionState
       );
 
@@ -559,14 +661,175 @@ function createPeer(
         "failed"
       ) {
 
+        console.error(
+          "WebRTC connection failed:",
+          peerId
+        );
+
         setStatus(
-          "Video connection failed."
+          "Video connection failed. Retrying..."
+        );
+
+        /*
+          Try an ICE restart if the browser
+          reports a failed connection.
+        */
+
+        retryPeerConnection(
+          peerId,
+          peerName
+        );
+      }
+
+      if (
+        pc.connectionState ===
+        "disconnected"
+      ) {
+
+        console.warn(
+          "WebRTC temporarily disconnected:",
+          peerId
         );
       }
     };
 
 
+  /* =========================
+     ICE CONNECTION STATE
+  ========================= */
+
+  pc.oniceconnectionstatechange =
+    () => {
+
+      console.log(
+        "Peer:",
+        peerId,
+        "ICE:",
+        pc.iceConnectionState
+      );
+    };
+
+
   return pc;
+}
+
+
+/* =========================
+   CONNECT TO EXISTING USERS
+========================= */
+
+function connectToExistingParticipants() {
+
+  if (!socket.id) {
+    return;
+  }
+
+  participants.forEach(
+    async participant => {
+
+      if (
+        participant.id === socket.id
+      ) {
+        return;
+      }
+
+      /*
+        Use deterministic ordering.
+
+        Only the device with the smaller
+        Socket.IO ID creates the offer.
+      */
+
+      if (
+        socket.id <
+        participant.id
+      ) {
+
+        await createOfferForPeer(
+          participant.id,
+          participant.name
+        );
+      }
+    }
+  );
+}
+
+
+/* =========================
+   CREATE OFFER
+========================= */
+
+async function createOfferForPeer(
+  peerId,
+  peerName
+) {
+
+  const pc =
+    createPeer(
+      peerId,
+      peerName
+    );
+
+  if (!pc) {
+    return;
+  }
+
+  /*
+    Do not create another offer while
+    an offer is already being created.
+  */
+
+  if (pc._offerStarted) {
+    return;
+  }
+
+  if (
+    pc.signalingState !==
+    "stable"
+  ) {
+    return;
+  }
+
+  pc._offerStarted = true;
+
+  try {
+
+    console.log(
+      "Creating offer for:",
+      peerId
+    );
+
+    const offer =
+      await pc.createOffer();
+
+    await pc.setLocalDescription(
+      offer
+    );
+
+    socket.emit(
+      "signal",
+      {
+        to: peerId,
+        type: "offer",
+        offer:
+          pc.localDescription
+      }
+    );
+
+    console.log(
+      "Offer sent to:",
+      peerId
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Offer creation error:",
+      error
+    );
+
+    pc._offerStarted = false;
+  }
 }
 
 
@@ -578,39 +841,73 @@ socket.on(
   "user-joined",
   async user => {
 
+    console.log(
+      "User joined:",
+      user
+    );
+
     /*
-      Only one side creates the offer.
-      This prevents offer collision.
+      The existing participant with the
+      smaller Socket.IO ID creates the offer.
     */
 
     if (
-      socket.id < user.id
+      socket.id <
+      user.id
     ) {
 
-      const pc =
-        createPeer(
-          user.id,
-          user.name
-        );
-
-      const offer =
-        await pc.createOffer();
-
-      await pc.setLocalDescription(
-        offer
-      );
-
-      socket.emit(
-        "signal",
-        {
-          to: user.id,
-          type: "offer",
-          offer
-        }
+      await createOfferForPeer(
+        user.id,
+        user.name
       );
     }
   }
 );
+
+
+/* =========================
+   FLUSH ICE CANDIDATES
+========================= */
+
+async function flushCandidateQueue(
+  pc
+) {
+
+  if (
+    !pc._remoteDescriptionReady
+  ) {
+    return;
+  }
+
+  while (
+    pc._candidateQueue.length > 0
+  ) {
+
+    const candidate =
+      pc._candidateQueue.shift();
+
+    try {
+
+      await pc.addIceCandidate(
+        new RTCIceCandidate(
+          candidate
+        )
+      );
+
+      console.log(
+        "Queued ICE candidate added:",
+        pc._peerId
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Queued ICE candidate error:",
+        error
+      );
+    }
+  }
+}
 
 
 /* =========================
@@ -620,6 +917,17 @@ socket.on(
 socket.on(
   "signal",
   async data => {
+
+    if (!data || !data.from) {
+      return;
+    }
+
+    console.log(
+      "Signal received:",
+      data.type,
+      "from:",
+      data.from
+    );
 
     let pc =
       peers.get(data.from);
@@ -634,49 +942,151 @@ socket.on(
     }
 
 
+    /* =========================
+       OFFER
+    ========================= */
+
     if (
-      data.type === "offer"
+      data.type ===
+      "offer"
     ) {
 
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.offer
-        )
-      );
+      try {
 
-      const answer =
-        await pc.createAnswer();
+        /*
+          Accept the remote offer.
+        */
 
-      await pc.setLocalDescription(
-        answer
-      );
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.offer
+          )
+        );
 
-      socket.emit(
-        "signal",
-        {
-          to: data.from,
-          type: "answer",
+        pc._remoteDescriptionReady =
+          true;
+
+        /*
+          Any ICE candidates that arrived
+          before the offer are now safe to add.
+        */
+
+        await flushCandidateQueue(
+          pc
+        );
+
+
+        /*
+          Create the answer.
+        */
+
+        const answer =
+          await pc.createAnswer();
+
+        await pc.setLocalDescription(
           answer
-        }
-      );
+        );
+
+        socket.emit(
+          "signal",
+          {
+            to: data.from,
+            type: "answer",
+            answer:
+              pc.localDescription
+          }
+        );
+
+        console.log(
+          "Answer sent to:",
+          data.from
+        );
+
+      } catch (error) {
+
+        console.error(
+          "Offer handling error:",
+          error
+        );
+      }
+
+      return;
     }
 
 
-    else if (
-      data.type === "answer"
+    /* =========================
+       ANSWER
+    ========================= */
+
+    if (
+      data.type ===
+      "answer"
     ) {
 
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.answer
-        )
-      );
+      try {
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.answer
+          )
+        );
+
+        pc._remoteDescriptionReady =
+          true;
+
+        await flushCandidateQueue(
+          pc
+        );
+
+        console.log(
+          "Answer accepted from:",
+          data.from
+        );
+
+      } catch (error) {
+
+        console.error(
+          "Answer handling error:",
+          error
+        );
+      }
+
+      return;
     }
 
 
-    else if (
-      data.type === "candidate"
+    /* =========================
+       ICE CANDIDATE
+    ========================= */
+
+    if (
+      data.type ===
+      "candidate"
     ) {
+
+      /*
+        IMPORTANT:
+
+        ICE candidates can arrive before the
+        remote offer/answer. Instead of throwing
+        them away, keep them in a queue.
+      */
+
+      if (
+        !pc._remoteDescriptionReady
+      ) {
+
+        pc._candidateQueue.push(
+          data.candidate
+        );
+
+        console.log(
+          "ICE candidate queued:",
+          data.from
+        );
+
+        return;
+      }
 
       try {
 
@@ -699,6 +1109,88 @@ socket.on(
 
 
 /* =========================
+   RETRY FAILED CONNECTION
+========================= */
+
+async function retryPeerConnection(
+  peerId,
+  peerName
+) {
+
+  const pc =
+    peers.get(peerId);
+
+  if (!pc) {
+    return;
+  }
+
+  /*
+    Wait briefly before retrying.
+  */
+
+  setTimeout(
+    async () => {
+
+      try {
+
+        if (
+          !peers.has(peerId)
+        ) {
+          return;
+        }
+
+        if (
+          socket.id <
+          peerId
+        ) {
+
+          pc._offerStarted = false;
+
+          /*
+            ICE restart helps when the two
+            devices are behind different networks.
+          */
+
+          const offer =
+            await pc.createOffer({
+              iceRestart: true
+            });
+
+          await pc.setLocalDescription(
+            offer
+          );
+
+          socket.emit(
+            "signal",
+            {
+              to: peerId,
+              type: "offer",
+              offer:
+                pc.localDescription
+            }
+          );
+
+          console.log(
+            "ICE restart offer sent:",
+            peerId
+          );
+        }
+
+      } catch (error) {
+
+        console.error(
+          "ICE restart error:",
+          error
+        );
+      }
+
+    },
+    1500
+  );
+}
+
+
+/* =========================
    USER LEFT
 ========================= */
 
@@ -710,8 +1202,12 @@ socket.on(
       peers.get(data.id);
 
     if (pc) {
+
       pc.close();
-      peers.delete(data.id);
+
+      peers.delete(
+        data.id
+      );
     }
 
     const video =
@@ -807,15 +1303,6 @@ function setupWhiteboard() {
         whiteboardCanvas
           .getBoundingClientRect();
 
-      /*
-        IMPORTANT:
-        The canvas may be displayed smaller/larger
-        than its internal 900x500 drawing area.
-
-        Convert the physical pointer position
-        into the canvas's internal coordinates.
-      */
-
       const scaleX =
         whiteboardCanvas.width /
         rect.width;
@@ -849,11 +1336,6 @@ function setupWhiteboard() {
       const rect =
         whiteboardCanvas
           .getBoundingClientRect();
-
-      /*
-        Convert displayed phone coordinates
-        back to the real canvas coordinates.
-      */
 
       const scaleX =
         whiteboardCanvas.width /
@@ -905,12 +1387,14 @@ function setupWhiteboard() {
     }
   );
 
+
   whiteboardCanvas.addEventListener(
     "pointercancel",
     () => {
       drawing = false;
     }
   );
+
 
   whiteboardCanvas.addEventListener(
     "pointerleave",
@@ -972,6 +1456,7 @@ function drawLine(
     "#1769ff";
 
   whiteboardContext.lineWidth = 3;
+
   whiteboardContext.lineCap =
     "round";
 
