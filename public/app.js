@@ -1,715 +1,408 @@
 const socket = io();
 
-let roomCode = "";
-let myName = "";
+const $ = id => document.getElementById(id);
+
+const home = $('home');
+const roomPage = $('room');
+const nameInput = $('name');
+const codeInput = $('roomCode');
+const homeError = $('homeError');
+
+let roomCode = '';
+let myName = '';
+let myToken = '';
 let isHost = false;
 
 let localStream = null;
-
-const peers = new Map();
-
-let participants = [];
-
-let whiteboardCanvas;
-let whiteboardContext;
-let drawing = false;
-let lastX = 0;
-let lastY = 0;
-
 let screenStream = null;
-let isScreenSharing = false;
 
+let micOn = true;
+let camOn = true;
 
-/* =========================
-   HELPERS
-========================= */
+let users = new Map();
+let peers = new Map();
+let remoteStreams = new Map();
+let visibleTokens = [];
 
-const $ = id => document.getElementById(id);
-
-function showRoom() {
-  $("lobby").classList.add("hidden");
-  $("room").classList.remove("hidden");
-}
-
-function showMessage(text) {
-  $("message").textContent = text;
-}
-
-function setStatus(text) {
-  $("roomStatus").textContent = text;
-}
-
-
-/* =========================
-   CAMERA + MICROPHONE
-========================= */
-
-async function startMedia() {
-  try {
-    localStream =
-      await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
-
-    $("localVideo").srcObject = localStream;
-
-    $("localVideo").muted = true;
-    $("localVideo").playsInline = true;
-    $("localVideo").setAttribute("playsinline", "");
-
-    $("localVideo").play().catch(() => {});
-
-    return true;
-
-  } catch (error) {
-    console.error("Media error:", error);
-
-    setStatus(
-      "Camera/microphone permission is required for video and audio."
-    );
-
-    return false;
-  }
-}
-
-
-/* =========================
-   CREATE ROOM
-========================= */
-
-$("createButton").onclick = async () => {
-  const name = $("name").value.trim();
-
-  if (!name) {
-    showMessage("Please enter your name.");
-    return;
-  }
-
-  myName = name.substring(0, 30);
-
-  const mediaStarted = await startMedia();
-
-  if (!mediaStarted) {
-    return;
-  }
-
-  socket.emit("create-room", myName);
+let permissions = {
+  audio: true,
+  video: true,
+  whiteboardWriter: false,
+  upload: false,
+  screen: false
 };
 
-
-/* =========================
-   JOIN ROOM
-========================= */
-
-$("joinButton").onclick = async () => {
-  const name = $("name").value.trim();
-  const code = $("roomCode").value.trim();
-
-  if (!name) {
-    showMessage("Please enter your name.");
-    return;
-  }
-
-  if (!/^\d{5}$/.test(code)) {
-    showMessage("Enter the 5-digit room code.");
-    return;
-  }
-
-  myName = name.substring(0, 30);
-  roomCode = code;
-
-  const mediaStarted = await startMedia();
-
-  if (!mediaStarted) {
-    return;
-  }
-
-  socket.emit("join-room", roomCode, myName);
+let locks = {
+  audio: false,
+  video: false
 };
 
+const saved = JSON.parse(
+  localStorage.getItem('studyconnect-session') || 'null'
+);
 
-$("roomCode").addEventListener("input", () => {
-  $("roomCode").value =
-    $("roomCode").value
-      .replace(/\D/g, "")
-      .slice(0, 5);
-});
+if (saved) {
+  nameInput.value = saved.name || '';
+}
 
+function save() {
+  localStorage.setItem(
+    'studyconnect-session',
+    JSON.stringify({
+      code: roomCode,
+      name: myName,
+      token: myToken
+    })
+  );
+}
 
-/* =========================
-   ROOM CREATED
-========================= */
+function error(t) {
+  homeError.textContent = t || '';
+}
 
-socket.on("room-created", code => {
-  roomCode = String(code);
-  isHost = true;
+function toast(t) {
+  const x = $('toast');
+  x.textContent = t;
+  x.classList.add('show');
 
-  showRoom();
+  setTimeout(() => {
+    x.classList.remove('show');
+  }, 2200);
+}
 
-  $("displayRoomCode").textContent = roomCode;
-  $("userRole").textContent = "HOST";
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  }[c]));
+}
 
-  setStatus("Room ready. Share the code.");
-
-  updateScreenButton();
-});
-
-
-/* =========================
-   ROOM STATE
-========================= */
-
-socket.on("room-state", state => {
-  roomCode = String(state.roomCode);
-
-  participants = state.participants || [];
-
-  isHost = state.hostId === socket.id;
-
-  $("displayRoomCode").textContent = roomCode;
-
-  $("userRole").textContent =
-    isHost ? "HOST" : "STUDENT";
-
-  $("participantCount").textContent =
-    participants.length;
-
-  updateParticipants();
-  updateWhiteboard();
-  updateScreenButton();
-
-  if (state.whiteboard) {
-    drawStoredBoard(state.whiteboard);
-  }
-
-  if (state.materials && state.materials.length) {
-    state.materials.forEach(material => {
-      displayMaterial(material, true);
-    });
-  }
-
-  showRoom();
-
-  /*
-    Start connections to users already
-    present in the room.
-  */
-  connectToExistingParticipants();
-});
-
-
-/* =========================
-   PARTICIPANTS
-========================= */
-
-function updateParticipants() {
-  const box = $("participants");
-
-  box.innerHTML = "";
-
-  participants.forEach(participant => {
-    const item = document.createElement("div");
-
-    item.className = "participant";
-
-    const name = document.createElement("div");
-
-    name.className = "participant-name";
-
-    name.textContent =
-      participant.name +
-      (participant.id === socket.id ? " (You)" : "") +
-      (participant.isHost ? " - Host" : "");
-
-    item.appendChild(name);
-
-    if (
-      isHost &&
-      participant.id !== socket.id
-    ) {
-      const controls =
-        document.createElement("div");
-
-      controls.className =
-        "participant-controls";
-
-
-      const board =
-        document.createElement("button");
-
-      board.textContent =
-        participant.canWhiteboard
-          ? "Whiteboard: ON"
-          : "Give Whiteboard";
-
-      board.onclick = () => {
-        socket.emit(
-          "set-whiteboard-writer",
-          participant.id
-        );
-      };
-
-      controls.appendChild(board);
-
-
-      const audio =
-        document.createElement("button");
-
-      audio.textContent =
-        participant.canAudio
-          ? "Mute Audio"
-          : "Allow Audio";
-
-      audio.onclick = () => {
-        socket.emit(
-          "set-permission",
-          {
-            targetId: participant.id,
-            permission: "canAudio",
-            allowed: !participant.canAudio
-          }
-        );
-      };
-
-      controls.appendChild(audio);
-
-
-      const upload =
-        document.createElement("button");
-
-      upload.textContent =
-        participant.canUpload
-          ? "Upload: ON"
-          : "Allow Upload";
-
-      upload.onclick = () => {
-        socket.emit(
-          "set-permission",
-          {
-            targetId: participant.id,
-            permission: "canUpload",
-            allowed: !participant.canUpload
-          }
-        );
-      };
-
-      controls.appendChild(upload);
-
-
-      const screen =
-        document.createElement("button");
-
-      screen.textContent =
-        participant.canScreenShare
-          ? "Screen: ON"
-          : "Allow Screen";
-
-      screen.onclick = () => {
-        socket.emit(
-          "set-permission",
-          {
-            targetId: participant.id,
-            permission: "canScreenShare",
-            allowed: !participant.canScreenShare
-          }
-        );
-      };
-
-      controls.appendChild(screen);
-
-      item.appendChild(controls);
-    }
-
-    box.appendChild(item);
+async function media() {
+  return navigator.mediaDevices?.getUserMedia({
+    video: true,
+    audio: true
   });
 }
 
+async function enter(code, host, serverUsers) {
+  roomCode = code;
+  isHost = !!host;
 
-/* =========================
-   WEBRTC
-========================= */
+  users.clear();
 
-function createPeer(peerId, peerName) {
-  if (peers.has(peerId)) {
-    return peers.get(peerId);
+  (serverUsers || []).forEach(u => {
+    users.set(u.token, u);
+  });
+
+  save();
+
+  home.classList.add('hidden');
+  roomPage.classList.remove('hidden');
+
+  $('roleBadge').textContent = isHost ? 'HOST' : 'STUDENT';
+
+  $('roomPrivate').textContent = isHost
+    ? `Room code: ${roomCode} · share privately`
+    : 'Private room · code hidden';
+
+  try {
+    localStream = await media();
+  } catch (e) {
+    localStream = null;
+    toast('Camera/microphone permission was not granted.');
   }
-
-  console.log(
-    "Creating WebRTC peer:",
-    peerId,
-    peerName
-  );
-
-  const pc =
-    new RTCPeerConnection({
-      iceServers: [
-        {
-          urls: "stun:stun.l.google.com:19302"
-        },
-        {
-          urls: "stun:stun.cloudflare.com:3478"
-        },
-        {
-          urls: "stun:stun1.l.google.com:19302"
-        },
-        {
-          urls: "stun:stun2.l.google.com:19302"
-        }
-      ]
-    });
-
-  pc._peerId = peerId;
-  pc._peerName = peerName || "Student";
-
-  pc._candidateQueue = [];
-
-  pc._remoteDescriptionReady = false;
-
-  pc._offerStarted = false;
-
-  pc._makingOffer = false;
-
-  pc._closedByUser = false;
-
-  pc._retryTimer = null;
-
-  peers.set(peerId, pc);
-
-
-  /* =========================
-     ADD LOCAL TRACKS
-  ========================= */
 
   if (localStream) {
-    localStream.getTracks().forEach(track => {
-      try {
-        pc.addTrack(track, localStream);
-      } catch (error) {
-        console.error(
-          "Could not add local track:",
-          error
-        );
-      }
+    localStream.getAudioTracks().forEach(t => {
+      t.enabled = true;
+    });
+
+    localStream.getVideoTracks().forEach(t => {
+      t.enabled = true;
     });
   }
 
+  updateControls();
+  renderVideos();
+  renderParticipants();
+  setupWhiteboard();
 
-  /* =========================
-     ICE CANDIDATES
-  ========================= */
+  const others = [...users.values()].filter(
+    u => u.socketId && u.token !== myToken
+  );
 
-  pc.onicecandidate = event => {
-    if (!event.candidate) {
-      return;
-    }
-
-    console.log(
-      "Sending ICE candidate to:",
-      peerId
-    );
-
-    socket.emit("signal", {
-      to: peerId,
-      type: "candidate",
-      candidate: event.candidate
-    });
-  };
-
-
-  /* =========================
-     REMOTE TRACK
-  ========================= */
-
-  pc.ontrack = event => {
-    console.log(
-      "REMOTE TRACK:",
-      peerId,
-      event.track.kind
-    );
-
-    let video =
-      document.getElementById(
-        "video-" + peerId
-      );
-
-    if (!video) {
-      const card =
-        document.createElement("div");
-
-      card.className = "video-card";
-
-      video =
-        document.createElement("video");
-
-      video.id =
-        "video-" + peerId;
-
-      video.autoplay = true;
-      video.playsInline = true;
-      video.setAttribute(
-        "playsinline",
-        ""
-      );
-
-      video.setAttribute(
-        "webkit-playsinline",
-        ""
-      );
-
-      const label =
-        document.createElement("div");
-
-      label.className = "video-name";
-
-      const person =
-        participants.find(
-          p => p.id === peerId
-        );
-
-      label.textContent =
-        person
-          ? person.name
-          : peerName || "Student";
-
-      card.appendChild(video);
-      card.appendChild(label);
-
-      $("videos").appendChild(card);
-    }
-
-    if (event.streams && event.streams[0]) {
-      video.srcObject =
-        event.streams[0];
-
-      video.play()
-        .then(() => {
-          console.log(
-            "REMOTE VIDEO PLAYING:",
-            peerId
-          );
-        })
-        .catch(error => {
-          console.error(
-            "Remote video play error:",
-            error
-          );
-
-          /*
-            Some mobile browsers require
-            another play attempt.
-          */
-          setTimeout(() => {
-            video.play().catch(() => {});
-          }, 500);
-        });
-    }
-  };
-
-
-  /* =========================
-     CONNECTION STATE
-  ========================= */
-
-  pc.onconnectionstatechange = () => {
-    console.log(
-      "Peer:",
-      peerId,
-      "Connection:",
-      pc.connectionState
-    );
-
-    if (
-      pc.connectionState ===
-      "connected"
-    ) {
-      setStatus(
-        "Video and audio connected."
-      );
-
-      if (pc._retryTimer) {
-        clearTimeout(pc._retryTimer);
-        pc._retryTimer = null;
-      }
-    }
-
-    if (
-      pc.connectionState ===
-      "failed"
-    ) {
-      console.error(
-        "WebRTC connection failed:",
-        peerId
-      );
-
-      setStatus(
-        "Video connection failed. Retrying..."
-      );
-
-      schedulePeerRetry(
-        peerId,
-        peerName
-      );
-    }
-
-    if (
-      pc.connectionState ===
-      "disconnected"
-    ) {
-      console.warn(
-        "WebRTC temporarily disconnected:",
-        peerId
-      );
-
-      setStatus(
-        "Video connection interrupted. Reconnecting..."
-      );
-
-      schedulePeerRetry(
-        peerId,
-        peerName
-      );
-    }
-  };
-
-
-  /* =========================
-     ICE CONNECTION STATE
-  ========================= */
-
-  pc.oniceconnectionstatechange = () => {
-    console.log(
-      "Peer:",
-      peerId,
-      "ICE:",
-      pc.iceConnectionState
-    );
-
-    if (
-      pc.iceConnectionState ===
-      "connected" ||
-      pc.iceConnectionState ===
-      "completed"
-    ) {
-      console.log(
-        "ICE connection established:",
-        peerId
-      );
-    }
-
-    if (
-      pc.iceConnectionState ===
-      "failed"
-    ) {
-      console.error(
-        "ICE FAILED:",
-        peerId
-      );
-
-      schedulePeerRetry(
-        peerId,
-        peerName
-      );
-    }
-  };
-
-
-  /* =========================
-     ICE GATHERING
-  ========================= */
-
-  pc.onicegatheringstatechange = () => {
-    console.log(
-      "Peer:",
-      peerId,
-      "ICE gathering:",
-      pc.iceGatheringState
-    );
-  };
-
-
-  return pc;
+  others.forEach(u => connectPeer(u, true));
 }
 
+function updateControls() {
+  const mb = $('micBtn');
+  const cb = $('camBtn');
 
-/* =========================
-   CONNECT TO EXISTING USERS
-========================= */
+  mb.textContent = micOn ? '🎤 Mute' : '🔇 Unmute';
+  cb.textContent = camOn ? '📷 Camera off' : '📷 Camera on';
 
-function connectToExistingParticipants() {
-  if (!socket.id) {
-    return;
+  mb.disabled = !localStream || locks.audio;
+  cb.disabled = !localStream || locks.video;
+
+  $('uploadBtn').disabled =
+    !isHost && !permissions.upload;
+
+  $('screenBtn').disabled =
+    !isHost && !permissions.screen;
+
+  $('clearBoard').disabled =
+    !isHost && !permissions.whiteboardWriter;
+
+  $('whiteboardBtn').textContent =
+    permissions.whiteboardWriter || isHost
+      ? '✏️ Whiteboard (write)'
+      : '✏️ Whiteboard';
+}
+
+function preferred() {
+  const arr = [...users.values()].filter(u => u.connected);
+
+  const host =
+    arr.find(u => u.host) ||
+    arr.find(u => u.token === myToken);
+
+  const me = arr.find(u => u.token === myToken);
+
+  const others = arr.filter(
+    u =>
+      u.token !== host?.token &&
+      u.token !== myToken
+  );
+
+  const out = [];
+
+  if (host) {
+    out.push(host.token);
   }
 
-  participants.forEach(participant => {
-    if (
-      participant.id === socket.id
-    ) {
-      return;
-    }
+  if (me && me.token !== host?.token) {
+    out.push(me.token);
+  }
 
-    /*
-      Only the participant with the
-      smaller Socket.IO ID initiates.
-
-      This prevents both browsers from
-      creating an offer simultaneously.
-    */
-
-    if (
-      socket.id <
-      participant.id
-    ) {
-      createOfferForPeer(
-        participant.id,
-        participant.name
-      );
+  others.forEach(u => {
+    if (out.length < 4) {
+      out.push(u.token);
     }
   });
+
+  return out;
 }
 
+function renderVideos() {
+  const box = $('videos');
 
-/* =========================
-   CREATE OFFER
-========================= */
+  box.innerHTML = '';
 
-async function createOfferForPeer(
-  peerId,
-  peerName
-) {
+  const wanted = [
+    ...new Set([
+      ...visibleTokens,
+      ...preferred()
+    ])
+  ]
+    .filter(t => users.has(t))
+    .slice(0, 4);
+
+  visibleTokens = wanted;
+
+  wanted.forEach(t => {
+    makeTile(users.get(t));
+  });
+
+  $('videoCount').textContent =
+    `${wanted.length}/4 visible`;
+
+  renderPicker();
+}
+
+function makeTile(u) {
+  let tile = document.getElementById(
+    'tile-' + u.token
+  );
+
+  if (!tile) {
+    tile = document.createElement('div');
+
+    tile.className = 'video-tile';
+    tile.id = 'tile-' + u.token;
+
+    const v = document.createElement('video');
+
+    v.autoplay = true;
+    v.playsInline = true;
+    v.muted = u.token === myToken;
+
+    const n = document.createElement('div');
+
+    n.className = 'video-name';
+
+    tile.append(v, n);
+
+    $('videos').appendChild(tile);
+  }
+
+  tile.querySelector('.video-name').textContent =
+    (u.name || 'Student') +
+    (u.token === myToken ? ' (You)' : '');
+
+  const v = tile.querySelector('video');
+
+  if (u.token === myToken) {
+    if (localStream) {
+      v.srcObject =
+        screenStream || localStream;
+    }
+  } else if (remoteStreams.has(u.token)) {
+    v.srcObject =
+      remoteStreams.get(u.token);
+  }
+}
+
+function renderPicker() {
+  const p = $('pickerList');
+
+  p.innerHTML = '';
+
+  [...users.values()]
+    .filter(
+      u =>
+        u.connected &&
+        u.token !== myToken
+    )
+    .forEach(u => {
+      const row =
+        document.createElement('div');
+
+      row.className = 'picker-item';
+
+      row.innerHTML =
+        `<span>${esc(u.name)}</span>`;
+
+      const b =
+        document.createElement('button');
+
+      b.textContent =
+        visibleTokens.includes(u.token)
+          ? 'Remove'
+          : 'Add';
+
+      b.onclick = () => {
+        if (
+          visibleTokens.includes(u.token)
+        ) {
+          visibleTokens =
+            visibleTokens.filter(
+              x => x !== u.token
+            );
+        } else if (
+          visibleTokens.length < 4
+        ) {
+          visibleTokens.push(u.token);
+        } else {
+          toast('Remove one video first.');
+        }
+
+        renderVideos();
+      };
+
+      row.appendChild(b);
+      p.appendChild(row);
+    });
+}
+
+$('videoCount').onclick = () => {
+  $('videoPicker').classList.toggle(
+    'hidden'
+  );
+};
+
+function rtcConfig() {
+  return {
+    iceServers: [
+      {
+        urls: 'stun:stun.l.google.com:19302'
+      },
+      {
+        urls: 'stun:stun.cloudflare.com:3478'
+      }
+    ]
+  };
+}
+
+async function connectPeer(u, initiator) {
+  if (
+    !u ||
+    !u.socketId ||
+    u.token === myToken
+  ) {
+    return;
+  }
+
+  let p = peers.get(u.token);
+
+  if (p) {
+    return p;
+  }
+
   const pc =
-    createPeer(
-      peerId,
-      peerName
+    new RTCPeerConnection(
+      rtcConfig()
     );
 
-  if (!pc) {
-    return;
-  }
+  peers.set(u.token, pc);
 
-  if (
-    pc._offerStarted ||
-    pc._makingOffer
-  ) {
-    return;
-  }
+  localStream
+    ?.getTracks()
+    .forEach(t => {
+      pc.addTrack(t, localStream);
+    });
 
-  if (
-    pc.signalingState !==
-    "stable"
-  ) {
-    return;
-  }
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      socket.emit('signal', {
+        to: u.socketId,
+        data: {
+          type: 'candidate',
+          candidate: e.candidate
+        }
+      });
+    }
+  };
 
-  pc._offerStarted = true;
-  pc._makingOffer = true;
+  pc.ontrack = e => {
+    if (e.streams[0]) {
+      remoteStreams.set(
+        u.token,
+        e.streams[0]
+      );
 
-  try {
-    console.log(
-      "CREATING OFFER FOR:",
-      peerId
-    );
+      makeTile(u);
+    }
+  };
 
+  pc.onconnectionstatechange = () => {
+    if (
+      ['failed', 'closed'].includes(
+        pc.connectionState
+      )
+    ) {
+      pc.close();
+
+      peers.delete(u.token);
+      remoteStreams.delete(u.token);
+
+      renderVideos();
+    }
+  };
+
+  if (initiator) {
     const offer =
       await pc.createOffer();
 
@@ -717,1235 +410,1339 @@ async function createOfferForPeer(
       offer
     );
 
-    socket.emit(
-      "signal",
-      {
-        to: peerId,
-        type: "offer",
-        offer: pc.localDescription
+    socket.emit('signal', {
+      to: u.socketId,
+      data: {
+        type: 'offer',
+        sdp: pc.localDescription
       }
-    );
-
-    console.log(
-      "OFFER SENT TO:",
-      peerId
-    );
-
-  } catch (error) {
-    console.error(
-      "Offer creation error:",
-      error
-    );
-
-    pc._offerStarted = false;
-
-  } finally {
-    pc._makingOffer = false;
+    });
   }
+
+  return pc;
 }
 
-
-/* =========================
-   USER JOINED
-========================= */
-
-socket.on("user-joined", user => {
-  console.log(
-    "USER JOINED:",
-    user
-  );
-
-  if (!user || !user.id) {
-    return;
-  }
-
-  /*
-    Existing participant with the smaller
-    socket ID creates the offer.
-  */
-
-  if (
-    socket.id <
-    user.id
-  ) {
-    createOfferForPeer(
-      user.id,
-      user.name
-    );
-  }
-});
-
-
-/* =========================
-   FLUSH ICE QUEUE
-========================= */
-
-async function flushCandidateQueue(pc) {
-  if (
-    !pc._remoteDescriptionReady
-  ) {
-    return;
-  }
-
-  while (
-    pc._candidateQueue.length > 0
-  ) {
-    const candidate =
-      pc._candidateQueue.shift();
-
-    try {
-      await pc.addIceCandidate(
-        new RTCIceCandidate(candidate)
+socket.on(
+  'signal',
+  async ({ from, data }) => {
+    const u =
+      [...users.values()].find(
+        x => x.socketId === from
       );
 
-      console.log(
-        "Queued ICE candidate added:",
-        pc._peerId
-      );
+    if (!u) return;
 
-    } catch (error) {
-      console.error(
-        "Queued ICE candidate error:",
-        error
-      );
-    }
-  }
-}
+    let pc =
+      peers.get(u.token);
 
-
-/* =========================
-   SIGNALS
-========================= */
-
-socket.on("signal", async data => {
-  if (!data || !data.from) {
-    return;
-  }
-
-  console.log(
-    "SIGNAL RECEIVED:",
-    data.type,
-    "FROM:",
-    data.from
-  );
-
-  let pc =
-    peers.get(data.from);
-
-  if (!pc) {
-    pc =
-      createPeer(
-        data.from,
-        "Student"
-      );
-  }
-
-
-  /* =========================
-     OFFER
-  ========================= */
-
-  if (
-    data.type ===
-    "offer"
-  ) {
-    try {
-      /*
-        If an old failed connection exists,
-        accept the new offer.
-      */
-
-      if (
-        pc.signalingState !==
-        "stable"
-      ) {
-        console.warn(
-          "Signaling state before offer:",
-          pc.signalingState
-        );
+    if (data.type === 'offer') {
+      if (!pc) {
+        pc =
+          await connectPeer(
+            u,
+            false
+          );
       }
 
       await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.offer
-        )
+        data.sdp
       );
 
-      pc._remoteDescriptionReady =
-        true;
-
-      await flushCandidateQueue(pc);
-
-
-      const answer =
+      const ans =
         await pc.createAnswer();
 
       await pc.setLocalDescription(
-        answer
+        ans
       );
 
-      socket.emit(
-        "signal",
-        {
-          to: data.from,
-          type: "answer",
-          answer: pc.localDescription
+      socket.emit('signal', {
+        to: from,
+        data: {
+          type: 'answer',
+          sdp: pc.localDescription
         }
-      );
-
-      console.log(
-        "ANSWER SENT TO:",
-        data.from
-      );
-
-    } catch (error) {
-      console.error(
-        "OFFER HANDLING ERROR:",
-        error
-      );
+      });
     }
 
-    return;
-  }
-
-
-  /* =========================
-     ANSWER
-  ========================= */
-
-  if (
-    data.type ===
-    "answer"
-  ) {
-    try {
+    else if (
+      data.type === 'answer' &&
+      pc
+    ) {
       await pc.setRemoteDescription(
-        new RTCSessionDescription(
-          data.answer
-        )
-      );
-
-      pc._remoteDescriptionReady =
-        true;
-
-      await flushCandidateQueue(pc);
-
-      pc._offerStarted = false;
-
-      console.log(
-        "ANSWER ACCEPTED FROM:",
-        data.from
-      );
-
-    } catch (error) {
-      console.error(
-        "ANSWER HANDLING ERROR:",
-        error
+        data.sdp
       );
     }
 
-    return;
-  }
-
-
-  /* =========================
-     ICE CANDIDATE
-  ========================= */
-
-  if (
-    data.type ===
-    "candidate"
-  ) {
-    /*
-      Candidates may arrive before the
-      offer/answer. Keep them until the
-      remote description exists.
-    */
-
-    if (
-      !pc._remoteDescriptionReady
+    else if (
+      data.type === 'candidate' &&
+      pc
     ) {
-      pc._candidateQueue.push(
-        data.candidate
-      );
-
-      console.log(
-        "ICE CANDIDATE QUEUED FROM:",
-        data.from
-      );
-
-      return;
-    }
-
-    try {
-      await pc.addIceCandidate(
-        new RTCIceCandidate(
+      try {
+        await pc.addIceCandidate(
           data.candidate
-        )
-      );
-
-      console.log(
-        "ICE CANDIDATE ADDED FROM:",
-        data.from
-      );
-
-    } catch (error) {
-      console.error(
-        "ICE CANDIDATE ERROR:",
-        error
-      );
+        );
+      } catch (e) {}
     }
-  }
-});
-
-
-/* =========================
-   RETRY CONNECTION
-========================= */
-
-function schedulePeerRetry(
-  peerId,
-  peerName
-) {
-  const pc =
-    peers.get(peerId);
-
-  if (!pc) {
-    return;
-  }
-
-  if (pc._retryTimer) {
-    return;
-  }
-
-  pc._retryTimer =
-    setTimeout(async () => {
-      pc._retryTimer = null;
-
-      if (!peers.has(peerId)) {
-        return;
-      }
-
-      /*
-        Only the deterministic initiator
-        performs ICE restart.
-      */
-
-      if (
-        socket.id <
-        peerId
-      ) {
-        try {
-          console.log(
-            "STARTING ICE RESTART:",
-            peerId
-          );
-
-          pc._offerStarted = false;
-
-          const offer =
-            await pc.createOffer({
-              iceRestart: true
-            });
-
-          await pc.setLocalDescription(
-            offer
-          );
-
-          socket.emit(
-            "signal",
-            {
-              to: peerId,
-              type: "offer",
-              offer: pc.localDescription
-            }
-          );
-
-          console.log(
-            "ICE RESTART OFFER SENT:",
-            peerId
-          );
-
-        } catch (error) {
-          console.error(
-            "ICE restart error:",
-            error
-          );
-        }
-      }
-
-    }, 2000);
-}
-
-
-/* =========================
-   USER LEFT
-========================= */
-
-socket.on("user-left", data => {
-  if (!data || !data.id) {
-    return;
-  }
-
-  const pc =
-    peers.get(data.id);
-
-  if (pc) {
-    pc._closedByUser = true;
-
-    if (pc._retryTimer) {
-      clearTimeout(pc._retryTimer);
-    }
-
-    pc.close();
-
-    peers.delete(data.id);
-  }
-
-  const video =
-    document.getElementById(
-      "video-" + data.id
-    );
-
-  if (video) {
-    video.parentElement.remove();
-  }
-});
-
-
-/* =========================
-   NEW HOST
-========================= */
-
-socket.on("new-host", data => {
-  isHost =
-    data.hostId === socket.id;
-
-  $("userRole").textContent =
-    isHost
-      ? "HOST"
-      : "STUDENT";
-
-  updateParticipants();
-});
-
-
-/* =========================
-   PERMISSIONS
-========================= */
-
-socket.on(
-  "permission-updated",
-  ({ permission, allowed }) => {
-
-    if (
-      permission ===
-      "canAudio"
-    ) {
-      if (localStream) {
-        localStream
-          .getAudioTracks()
-          .forEach(track => {
-            track.enabled =
-              Boolean(allowed);
-          });
-      }
-    }
-
-    updateScreenButton();
   }
 );
 
+function renderParticipants() {
+  const list =
+    $('participantList');
+
+  list.innerHTML = '';
+
+  [...users.values()].forEach(u => {
+    const d =
+      document.createElement('div');
+
+    d.className = 'person';
+
+    const title =
+      document.createElement('div');
+
+    title.className =
+      'person-name';
+
+    title.textContent =
+      u.name +
+      (u.host ? ' · Host' : '');
+
+    d.appendChild(title);
+
+    if (isHost && !u.host) {
+      const a =
+        document.createElement('div');
+
+      a.className =
+        'person-actions';
+
+      [
+        [
+          'audio',
+          u.locks.audio
+            ? 'Allow audio'
+            : 'Mute audio'
+        ],
+        [
+          'video',
+          u.locks.video
+            ? 'Allow video'
+            : 'Turn video off'
+        ],
+        [
+          'whiteboardWriter',
+          u.permissions.whiteboardWriter
+            ? 'Remove whiteboard'
+            : 'Allow whiteboard'
+        ],
+        [
+          'upload',
+          u.permissions.upload
+            ? 'Remove upload'
+            : 'Allow upload'
+        ],
+        [
+          'screen',
+          u.permissions.screen
+            ? 'Remove screen'
+            : 'Allow screen'
+        ]
+      ].forEach(
+        ([type, label]) => {
+          const b =
+            document.createElement(
+              'button'
+            );
+
+          b.textContent = label;
+
+          b.onclick = () => {
+            socket.emit(
+              'host-permission',
+              {
+                token: u.token,
+                type,
+                allowed:
+                  type === 'audio' ||
+                  type === 'video'
+                    ? u.locks[type]
+                    : !u.permissions[type]
+              }
+            );
+          };
+
+          a.appendChild(b);
+        }
+      );
+
+      d.appendChild(a);
+    }
+
+    list.appendChild(d);
+  });
+}
+
+socket.on(
+  'participants',
+  ({ users: list }) => {
+    users.clear();
+
+    list.forEach(u =>
+      users.set(u.token, u)
+    );
+
+    const me =
+      users.get(myToken);
+
+    if (me) {
+      permissions =
+        me.permissions ||
+        permissions;
+
+      locks =
+        me.locks ||
+        locks;
+
+      isHost = !!me.host;
+    }
+
+    visibleTokens =
+      visibleTokens.filter(
+        t =>
+          users.has(t) &&
+          users.get(t).connected
+      );
+
+    renderVideos();
+    renderParticipants();
+    updateControls();
+  }
+);
+
+socket.on(
+  'permissions-updated',
+  d => {
+    permissions =
+      d.permissions ||
+      permissions;
+
+    locks =
+      d.locks ||
+      locks;
+
+    if (locks.audio) {
+      micOn = false;
+
+      localStream
+        ?.getAudioTracks()
+        .forEach(
+          t => t.enabled = false
+        );
+    }
+
+    if (locks.video) {
+      camOn = false;
+
+      localStream
+        ?.getVideoTracks()
+        .forEach(
+          t => t.enabled = false
+        );
+    }
+
+    updateControls();
+
+    toast(
+      'Host updated your permissions.'
+    );
+  }
+);
+
+socket.on(
+  'host-status',
+  () => {
+    isHost = true;
+
+    $('roleBadge').textContent =
+      'HOST';
+
+    $('roomPrivate').textContent =
+      `Room code: ${roomCode} · share privately`;
+
+    renderParticipants();
+    updateControls();
+  }
+);
+
+socket.on('chat', m => {});
+
+$('createBtn').onclick = () => {
+  myName =
+    (
+      nameInput.value.trim() ||
+      'Student'
+    ).slice(0, 30);
+
+  error('');
+
+  socket.emit(
+    'create-room',
+    { name: myName },
+    r => {
+      if (!r.ok) {
+        return error(r.error);
+      }
+
+      myToken = r.token;
+
+      enter(
+        r.code,
+        true,
+        r.users
+      );
+    }
+  );
+};
+
+$('joinBtn').onclick = () => {
+  myName =
+    (
+      nameInput.value.trim() ||
+      'Student'
+    ).slice(0, 30);
+
+  const c =
+    codeInput.value.replace(
+      /\D/g,
+      ''
+    );
+
+  error('');
+
+  if (c.length !== 5) {
+    return error(
+      'Enter a 5-digit room code.'
+    );
+  }
+
+  socket.emit(
+    'join-room',
+    {
+      code: c,
+      name: myName
+    },
+    r => {
+      if (!r.ok) {
+        return error(r.error);
+      }
+
+      myToken = r.token;
+
+      enter(
+        c,
+        r.host,
+        r.users
+      );
+    }
+  );
+};
+
+function reconnect() {
+  const s =
+    JSON.parse(
+      localStorage.getItem(
+        'studyconnect-session'
+      ) || 'null'
+    );
+
+  if (
+    !s?.code ||
+    !s?.token
+  ) {
+    return;
+  }
+
+  myName =
+    s.name ||
+    'Student';
+
+  socket.emit(
+    'join-room',
+    {
+      code: s.code,
+      name: myName,
+      token: s.token
+    },
+    r => {
+      if (r.ok) {
+        myToken = r.token;
+
+        enter(
+          s.code,
+          r.host,
+          r.users
+        );
+      } else {
+        localStorage.removeItem(
+          'studyconnect-session'
+        );
+      }
+    }
+  );
+}
+
+socket.on(
+  'connect',
+  () => {
+    if (roomCode) return;
+
+    reconnect();
+  }
+);
+
+$('exitBtn').onclick = () => {
+  if (
+    confirm(
+      'Exit this classroom?'
+    )
+  ) {
+    socket.emit(
+      'leave-room'
+    );
+
+    localStorage.removeItem(
+      'studyconnect-session'
+    );
+
+    location.reload();
+  }
+};
+
+$('participantsBtn').onclick =
+  () => {
+    if (isHost) {
+      $('participantsPanel')
+        .classList.remove(
+          'hidden'
+        );
+    }
+  };
+
+$('closeParticipants').onclick =
+  () => {
+    $('participantsPanel')
+      .classList.add(
+        'hidden'
+      );
+  };
+
+$('micBtn').onclick = () => {
+  if (
+    !localStream ||
+    locks.audio
+  ) {
+    return;
+  }
+
+  micOn = !micOn;
+
+  localStream
+    .getAudioTracks()
+    .forEach(
+      t => t.enabled = micOn
+    );
+
+  updateControls();
+};
+
+$('camBtn').onclick = () => {
+  if (
+    !localStream ||
+    locks.video
+  ) {
+    return;
+  }
+
+  camOn = !camOn;
+
+  localStream
+    .getVideoTracks()
+    .forEach(
+      t => t.enabled = camOn
+    );
+
+  updateControls();
+};
+
+$('whiteboardBtn').onclick =
+  () => {
+    $('board').scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    });
+  };
+
+$('uploadBtn').onclick = () => {
+  if (
+    !isHost &&
+    !permissions.upload
+  ) {
+    return;
+  }
+
+  $('fileInput').click();
+};
+
+$('fileInput').onchange = () => {
+  const f =
+    $('fileInput').files[0];
+
+  if (!f) return;
+
+  if (f.size > 4e6) {
+    return toast(
+      'Please keep files under 4 MB.'
+    );
+  }
+
+  const r =
+    new FileReader();
+
+  r.onload = () => {
+    socket.emit(
+      'upload-material',
+      {
+        name: f.name,
+        type: f.type,
+        data: r.result
+      }
+    );
+  };
+
+  r.readAsDataURL(f);
+
+  $('fileInput').value = '';
+};
+
+socket.on(
+  'material',
+  m => {
+    const box =
+      $('materials');
+
+    box.querySelector(
+      '.empty'
+    )?.remove();
+
+    const d =
+      document.createElement(
+        'div'
+      );
+
+    d.className =
+      'material-card';
+
+    const title =
+      document.createElement(
+        'div'
+      );
+
+    title.innerHTML =
+      `<strong>${esc(m.name)}</strong><small> · ${esc(m.by)}</small>`;
+
+    d.appendChild(title);
+
+    if (
+      m.type.startsWith(
+        'image/'
+      )
+    ) {
+      const img =
+        document.createElement(
+          'img'
+        );
+
+      img.src = m.data;
+
+      d.appendChild(img);
+    }
+
+    else if (
+      m.type ===
+      'application/pdf'
+    ) {
+      const fr =
+        document.createElement(
+          'iframe'
+        );
+
+      fr.src = m.data;
+
+      d.appendChild(fr);
+    }
+
+    else {
+      const a =
+        document.createElement(
+          'a'
+        );
+
+      a.href = m.data;
+      a.download = m.name;
+      a.textContent =
+        'Open file';
+
+      d.appendChild(a);
+    }
+
+    box.prepend(d);
+  }
+);
+
+$('screenBtn').onclick =
+  async () => {
+    if (
+      !navigator.mediaDevices
+        ?.getDisplayMedia
+    ) {
+      return toast(
+        'Screen sharing is not supported here.'
+      );
+    }
+
+    try {
+      screenStream =
+        await navigator.mediaDevices
+          .getDisplayMedia({
+            video: true
+          });
+
+      const track =
+        screenStream
+          .getVideoTracks()[0];
+
+      peers.forEach(pc => {
+        const s =
+          pc.getSenders().find(
+            x =>
+              x.track?.kind ===
+              'video'
+          );
+
+        if (s) {
+          s.replaceTrack(track);
+        }
+      });
+
+      makeTile(
+        users.get(myToken)
+      );
+
+      socket.emit(
+        'screen-state',
+        {
+          sharing: true
+        }
+      );
+
+      track.onended =
+        () => stopScreen();
+
+    } catch (e) {}
+  };
+
+function stopScreen() {
+  if (!screenStream) return;
+
+  const cam =
+    localStream
+      ?.getVideoTracks()[0];
+
+  peers.forEach(pc => {
+    const s =
+      pc.getSenders().find(
+        x =>
+          x.track?.kind ===
+          'video'
+      );
+
+    if (s && cam) {
+      s.replaceTrack(cam);
+    }
+  });
+
+  screenStream
+    .getTracks()
+    .forEach(
+      t => t.stop()
+    );
+
+  screenStream = null;
+
+  makeTile(
+    users.get(myToken)
+  );
+
+  socket.emit(
+    'screen-state',
+    {
+      sharing: false
+    }
+  );
+}
 
 /* =========================
    WHITEBOARD
 ========================= */
 
-function setupWhiteboard() {
-  whiteboardCanvas =
-    $("whiteboard");
+const board = $('board');
+const ctx = board.getContext('2d');
 
-  whiteboardContext =
-    whiteboardCanvas.getContext("2d");
+let drawing = false;
+let last = {
+  x: 0,
+  y: 0
+};
 
+let boardTool = 'thin';
+let boardColor = '#111827';
 
-  whiteboardCanvas.addEventListener(
-    "pointerdown",
-    event => {
+const boardStrokes = new Map();
+let strokeCounter = 0;
 
-      if (!canWrite()) {
-        return;
-      }
+function resize() {
+  const r =
+    board.getBoundingClientRect();
 
-      drawing = true;
-
-      const rect =
-        whiteboardCanvas
-          .getBoundingClientRect();
-
-      const scaleX =
-        whiteboardCanvas.width /
-        rect.width;
-
-      const scaleY =
-        whiteboardCanvas.height /
-        rect.height;
-
-      lastX =
-        (event.clientX - rect.left) *
-        scaleX;
-
-      lastY =
-        (event.clientY - rect.top) *
-        scaleY;
-
-      if (
-        whiteboardCanvas.setPointerCapture
-      ) {
-        try {
-          whiteboardCanvas.setPointerCapture(
-            event.pointerId
-          );
-        } catch {}
-      }
-    }
-  );
-
-
-  whiteboardCanvas.addEventListener(
-    "pointermove",
-    event => {
-
-      if (
-        !drawing ||
-        !canWrite()
-      ) {
-        return;
-      }
-
-      const rect =
-        whiteboardCanvas
-          .getBoundingClientRect();
-
-      const scaleX =
-        whiteboardCanvas.width /
-        rect.width;
-
-      const scaleY =
-        whiteboardCanvas.height /
-        rect.height;
-
-      const x =
-        (event.clientX - rect.left) *
-        scaleX;
-
-      const y =
-        (event.clientY - rect.top) *
-        scaleY;
-
-
-      drawLine(
-        lastX,
-        lastY,
-        x,
-        y
-      );
-
-
-      socket.emit(
-        "whiteboard-draw",
-        {
-          x1: lastX,
-          y1: lastY,
-          x2: x,
-          y2: y,
-          width: 3
-        }
-      );
-
-
-      lastX = x;
-      lastY = y;
-    }
-  );
-
-
-  whiteboardCanvas.addEventListener(
-    "pointerup",
-    event => {
-
-      drawing = false;
-
-      if (
-        whiteboardCanvas.releasePointerCapture
-      ) {
-        try {
-          whiteboardCanvas.releasePointerCapture(
-            event.pointerId
-          );
-        } catch {}
-      }
-    }
-  );
-
-
-  whiteboardCanvas.addEventListener(
-    "pointercancel",
-    () => {
-      drawing = false;
-    }
-  );
-
-
-  whiteboardCanvas.addEventListener(
-    "pointerleave",
-    () => {
-      /*
-        Do not stop drawing immediately on
-        mobile when pointer capture is active.
-      */
-
-      if (
-        !whiteboardCanvas.hasPointerCapture
-        ||
-        !whiteboardCanvas.hasPointerCapture()
-      ) {
-        drawing = false;
-      }
-    }
-  );
-}
-
-
-function canWrite() {
-  if (isHost) {
-    return true;
-  }
-
-  const me =
-    participants.find(
-      p => p.id === socket.id
+  const old =
+    document.createElement(
+      'canvas'
     );
 
-  return Boolean(
-    me &&
-    me.canWhiteboard
-  );
+  old.width = board.width;
+  old.height = board.height;
+
+  if (
+    old.width &&
+    old.height
+  ) {
+    old
+      .getContext('2d')
+      .drawImage(
+        board,
+        0,
+        0
+      );
+  }
+
+  board.width =
+    Math.max(
+      300,
+      r.width
+    );
+
+  board.height =
+    Math.max(
+      250,
+      r.height
+    );
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (
+    old.width &&
+    old.height
+  ) {
+    ctx.drawImage(
+      old,
+      0,
+      0,
+      old.width,
+      old.height,
+      0,
+      0,
+      board.width,
+      board.height
+    );
+  }
+
+  redrawBoard();
 }
 
+setTimeout(
+  resize,
+  100
+);
 
-function updateWhiteboard() {
-  $("whiteboardStatus")
-    .textContent =
-      canWrite()
-        ? "You can write"
-        : "View only";
+addEventListener(
+  'resize',
+  resize
+);
+
+function pt(e) {
+  const r =
+    board.getBoundingClientRect();
+
+  const p =
+    e.touches
+      ? e.touches[0]
+      : e;
+
+  return {
+    x:
+      (p.clientX - r.left) *
+      board.width /
+      r.width,
+
+    y:
+      (p.clientY - r.top) *
+      board.height /
+      r.height
+  };
 }
 
+function toolSettings() {
+  if (
+    boardTool ===
+    'thick'
+  ) {
+    return {
+      width: 8,
+      alpha: 1,
+      fade: false
+    };
+  }
 
-function drawLine(
+  if (
+    boardTool ===
+    'highlighter'
+  ) {
+    return {
+      width: 20,
+      alpha: 0.35,
+      fade: true
+    };
+  }
+
+  return {
+    width: 3,
+    alpha: 1,
+    fade: false
+  };
+}
+
+function drawSegment(
   x1,
   y1,
   x2,
-  y2
+  y2,
+  tool,
+  color,
+  width,
+  alpha
 ) {
-  whiteboardContext.beginPath();
+  ctx.save();
 
-  whiteboardContext.moveTo(
+  ctx.globalAlpha =
+    alpha;
+
+  ctx.strokeStyle =
+    color;
+
+  ctx.lineWidth =
+    width;
+
+  ctx.lineCap =
+    'round';
+
+  ctx.lineJoin =
+    'round';
+
+  ctx.beginPath();
+
+  ctx.moveTo(
     x1,
     y1
   );
 
-  whiteboardContext.lineTo(
+  ctx.lineTo(
     x2,
     y2
   );
 
-  whiteboardContext.strokeStyle =
-    "#1769ff";
+  ctx.stroke();
 
-  whiteboardContext.lineWidth = 3;
-
-  whiteboardContext.lineCap =
-    "round";
-
-  whiteboardContext.stroke();
+  ctx.restore();
 }
 
+function addStroke(
+  stroke,
+  redraw = true
+) {
+  const id =
+    stroke.id ||
+    ('local-' +
+      (++strokeCounter));
 
-function drawStoredBoard(strokes) {
-  if (!whiteboardContext) {
+  stroke.id = id;
+
+  boardStrokes.set(
+    id,
+    stroke
+  );
+
+  if (stroke.fade) {
+    setTimeout(
+      () => {
+        boardStrokes.delete(
+          id
+        );
+
+        redrawBoard();
+      },
+      5000
+    );
+  }
+
+  if (redraw) {
+    redrawBoard();
+  }
+}
+
+function redrawBoard() {
+  ctx.clearRect(
+    0,
+    0,
+    board.width,
+    board.height
+  );
+
+  boardStrokes.forEach(
+    stroke => {
+      drawSegment(
+        stroke.x1,
+        stroke.y1,
+        stroke.x2,
+        stroke.y2,
+        stroke.tool,
+        stroke.color,
+        stroke.width,
+        stroke.alpha
+      );
+    }
+  );
+}
+
+function start(e) {
+  if (
+    !permissions.whiteboardWriter &&
+    !isHost
+  ) {
     return;
   }
 
-  strokes.forEach(stroke => {
-    drawLine(
-      stroke.x1,
-      stroke.y1,
-      stroke.x2,
-      stroke.y2
-    );
-  });
+  e.preventDefault();
+
+  drawing = true;
+
+  last = pt(e);
 }
 
+function move(e) {
+  if (!drawing) return;
+
+  e.preventDefault();
+
+  const p = pt(e);
+
+  const settings =
+    toolSettings();
+
+  const stroke = {
+    id:
+      'local-' +
+      (++strokeCounter),
+
+    x1: last.x,
+    y1: last.y,
+    x2: p.x,
+    y2: p.y,
+
+    tool:
+      boardTool,
+
+    color:
+      boardColor,
+
+    width:
+      settings.width,
+
+    alpha:
+      settings.alpha,
+
+    fade:
+      settings.fade
+  };
+
+  addStroke(
+    stroke
+  );
+
+  socket.emit(
+    'whiteboard',
+    {
+      type: 'line',
+
+      id: stroke.id,
+
+      x1: stroke.x1,
+      y1: stroke.y1,
+      x2: stroke.x2,
+      y2: stroke.y2,
+
+      tool:
+        stroke.tool,
+
+      color:
+        stroke.color,
+
+      width:
+        stroke.width,
+
+      alpha:
+        stroke.alpha,
+
+      fade:
+        stroke.fade
+    }
+  );
+
+  last = p;
+}
+
+function stop() {
+  drawing = false;
+}
+
+board.onmousedown =
+  start;
+
+board.onmousemove =
+  move;
+
+addEventListener(
+  'mouseup',
+  stop
+);
+
+board.ontouchstart =
+  start;
+
+board.ontouchmove =
+  move;
+
+board.ontouchend =
+  stop;
 
 socket.on(
-  "whiteboard-draw",
-  stroke => {
-    drawLine(
-      stroke.x1,
-      stroke.y1,
-      stroke.x2,
-      stroke.y2
+  'whiteboard',
+  d => {
+    if (
+      d.type !==
+      'line'
+    ) {
+      return;
+    }
+
+    addStroke(
+      {
+        id:
+          d.id ||
+          (
+            'remote-' +
+            (++strokeCounter)
+          ),
+
+        x1: d.x1,
+        y1: d.y1,
+
+        x2: d.x2,
+        y2: d.y2,
+
+        tool:
+          d.tool ||
+          'thin',
+
+        color:
+          d.color ||
+          '#111827',
+
+        width:
+          d.width ||
+          3,
+
+        alpha:
+          d.alpha ??
+          1,
+
+        fade:
+          !!d.fade
+      }
     );
   }
 );
 
+$('clearBoard').onclick =
+  () => {
+    if (
+      !isHost &&
+      !permissions.whiteboardWriter
+    ) {
+      return;
+    }
+
+    boardStrokes.clear();
+
+    redrawBoard();
+
+    socket.emit(
+      'whiteboard-clear'
+    );
+  };
 
 socket.on(
-  "whiteboard-cleared",
+  'whiteboard-clear',
   () => {
-    whiteboardContext.clearRect(
-      0,
-      0,
-      whiteboardCanvas.width,
-      whiteboardCanvas.height
-    );
+    boardStrokes.clear();
+    redrawBoard();
   }
 );
-
-
-$("clearBoardButton").onclick =
-  () => {
-
-    if (!isHost) {
-      return;
-    }
-
-    socket.emit(
-      "clear-whiteboard"
-    );
-  };
-
-
-$("takeBoardButton").onclick =
-  () => {
-
-    if (!isHost) {
-      return;
-    }
-
-    socket.emit(
-      "take-whiteboard"
-    );
-  };
-
 
 /* =========================
-   MATERIALS
+   WHITEBOARD TOOLBAR
 ========================= */
 
-$("uploadButton").onclick =
-  () => {
-
-    const file =
-      $("materialInput").files[0];
-
-    if (!file) {
-      alert(
-        "Choose an image or PDF first."
-      );
-      return;
-    }
-
-    if (
-      !file.type.startsWith("image/") &&
-      file.type !==
-        "application/pdf"
-    ) {
-      alert(
-        "Only images and PDF files are supported."
-      );
-
-      return;
-    }
-
-    if (
-      file.size >
-      8 * 1024 * 1024
-    ) {
-      alert(
-        "Please keep the file under 8 MB."
-      );
-
-      return;
-    }
-
-    const reader =
-      new FileReader();
-
-    reader.onload =
-      () => {
-
-        socket.emit(
-          "upload-material",
-          {
-            name: file.name,
-            type: file.type,
-            data: reader.result
-          }
-        );
-      };
-
-    reader.readAsDataURL(file);
-  };
-
-
-function displayMaterial(
-  material,
-  fromRoomState = false
-) {
+function setupWhiteboard() {
   if (
     document.getElementById(
-      "material-" + material.id
+      'boardTools'
     )
   ) {
     return;
   }
 
-  const box =
-    document.createElement("div");
+  const wrap =
+    board.parentElement;
 
-  box.className =
-    "material";
+  if (!wrap) return;
 
-  box.id =
-    "material-" + material.id;
-
-
-  const title =
-    document.createElement("strong");
-
-  title.textContent =
-    material.name +
-    " — " +
-    material.uploadedBy;
-
-  box.appendChild(title);
-
-
-  if (
-    material.type ===
-    "application/pdf"
-  ) {
-    const frame =
-      document.createElement("iframe");
-
-    frame.src =
-      material.data;
-
-    box.appendChild(frame);
-
-  } else if (
-    material.type.startsWith("image/")
-  ) {
-    const image =
-      document.createElement("img");
-
-    image.src =
-      material.data;
-
-    box.appendChild(image);
-  }
-
-
-  $("materials").prepend(box);
-}
-
-
-socket.on(
-  "material-added",
-  material => {
-
-    displayMaterial(material);
-
-    setStatus(
-      "New study material shared."
-    );
-  }
-);
-
-
-socket.on(
-  "material-error",
-  message => {
-    alert(message);
-  }
-);
-
-
-/* =========================
-   SCREEN SHARING
-========================= */
-
-function updateScreenButton() {
-  const me =
-    participants.find(
-      p => p.id === socket.id
+  const tools =
+    document.createElement(
+      'div'
     );
 
-  const allowed =
-    isHost ||
-    Boolean(
-      me &&
-      me.canScreenShare
-    );
+  tools.id =
+    'boardTools';
 
-  $("screenButton").disabled =
-    !allowed;
-}
+  tools.className =
+    'board-tools';
 
+  tools.innerHTML = `
+    <div class="board-tool-group">
+      <span class="board-tool-label">Pen</span>
 
-$("screenButton").onclick =
-  async () => {
+      <button
+        type="button"
+        class="board-tool active"
+        data-tool="thin">
+        Thin
+      </button>
 
-    if (isScreenSharing) {
-      stopScreenShare();
-    } else {
-      startScreenShare();
-    }
-  };
+      <button
+        type="button"
+        class="board-tool"
+        data-tool="thick">
+        Thick
+      </button>
 
+      <button
+        type="button"
+        class="board-tool highlighter-tool"
+        data-tool="highlighter">
+        Highlighter
+      </button>
+    </div>
 
-async function startScreenShare() {
-  try {
-    screenStream =
-      await navigator.mediaDevices
-        .getDisplayMedia({
-          video: true,
-          audio: true
-        });
+    <div class="board-tool-group">
+      <span class="board-tool-label">Color</span>
 
+      <button type="button" class="color-dot active" data-color="#111827" style="background:#111827"></button>
+      <button type="button" class="color-dot" data-color="#e53935" style="background:#e53935"></button>
+      <button type="button" class="color-dot" data-color="#1e88e5" style="background:#1e88e5"></button>
+      <button type="button" class="color-dot" data-color="#43a047" style="background:#43a047"></button>
+      <button type="button" class="color-dot" data-color="#f9a825" style="background:#f9a825"></button>
+      <button type="button" class="color-dot" data-color="#8e24aa" style="background:#8e24aa"></button>
+    </div>
+  `;
 
-    const track =
-      screenStream
-        .getVideoTracks()[0];
-
-    if (!track) {
-      return;
-    }
-
-
-    for (
-      const pc of peers.values()
-    ) {
-      const sender =
-        pc.getSenders().find(
-          s =>
-            s.track &&
-            s.track.kind === "video"
-        );
-
-      if (sender) {
-        await sender.replaceTrack(
-          track
-        );
-      }
-    }
-
-
-    isScreenSharing = true;
-
-    $("screenButton")
-      .textContent =
-        "Stop Sharing";
-
-    $("screenStatus")
-      .textContent =
-        "You are sharing your screen.";
-
-    socket.emit(
-      "start-screen-share"
-    );
-
-
-    track.onended =
-      () => {
-        stopScreenShare();
-      };
-
-  } catch (error) {
-    console.error(error);
-
-    $("screenStatus")
-      .textContent =
-        "Screen sharing cancelled.";
-  }
-}
-
-
-async function stopScreenShare() {
-  if (!screenStream) {
-    return;
-  }
-
-  screenStream
-    .getTracks()
-    .forEach(
-      track => track.stop()
-    );
-
-  screenStream = null;
-
-  const cameraTrack =
-    localStream &&
-    localStream.getVideoTracks()[0];
-
-
-  for (
-    const pc of peers.values()
-  ) {
-    const sender =
-      pc.getSenders().find(
-        s =>
-          s.track &&
-          s.track.kind === "video"
-      );
-
-    if (
-      sender &&
-      cameraTrack
-    ) {
-      await sender.replaceTrack(
-        cameraTrack
-      );
-    }
-  }
-
-
-  isScreenSharing = false;
-
-  $("screenButton")
-    .textContent =
-      "Share My Screen";
-
-  $("screenStatus")
-    .textContent =
-      "Screen sharing stopped.";
-
-  socket.emit(
-    "stop-screen-share"
+  wrap.insertBefore(
+    tools,
+    board
   );
+
+  tools
+    .querySelectorAll(
+      '.board-tool'
+    )
+    .forEach(btn => {
+      btn.onclick = () => {
+        boardTool =
+          btn.dataset.tool;
+
+        tools
+          .querySelectorAll(
+            '.board-tool'
+          )
+          .forEach(
+            x =>
+              x.classList.remove(
+                'active'
+              )
+          );
+
+        btn.classList.add(
+          'active'
+        );
+      };
+    });
+
+  tools
+    .querySelectorAll(
+      '.color-dot'
+    )
+    .forEach(btn => {
+      btn.onclick = () => {
+        boardColor =
+          btn.dataset.color;
+
+        tools
+          .querySelectorAll(
+            '.color-dot'
+          )
+          .forEach(
+            x =>
+              x.classList.remove(
+                'active'
+              )
+          );
+
+        btn.classList.add(
+          'active'
+        );
+      };
+    });
 }
-
-
-socket.on(
-  "screen-started",
-  data => {
-    $("screenStatus")
-      .textContent =
-        data.name +
-        " is sharing their screen.";
-  }
-);
-
-
-socket.on(
-  "screen-stopped",
-  () => {
-    $("screenStatus")
-      .textContent =
-        "Screen sharing stopped.";
-  }
-);
-
-
-socket.on(
-  "screen-error",
-  message => {
-    alert(message);
-  }
-);
-
 
 /* =========================
    EID AI
 ========================= */
 
-$("eidOpen").onclick =
-  () => {
-    $("eidPanel")
-      .classList.remove("hidden");
-  };
+$('aiForm').onsubmit =
+  async e => {
+    e.preventDefault();
 
+    const q =
+      $('aiInput')
+        .value
+        .trim();
 
-$("eidClose").onclick =
-  () => {
-    $("eidPanel")
-      .classList.add("hidden");
-  };
+    if (!q) return;
 
-
-async function askEid() {
-  const input =
-    $("eidQuestion");
-
-  const question =
-    input.value.trim();
-
-  if (!question) {
-    return;
-  }
-
-  addEidMessage(
-    question,
-    true
-  );
-
-  input.value = "";
-
-  addEidMessage(
-    "Thinking...",
-    false,
-    "eid-thinking"
-  );
-
-  try {
-    const response =
-      await fetch(
-        "/api/eid",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
-
-          body: JSON.stringify({
-            question
-          })
-        }
-      );
-
-
-    const data =
-      await response.json();
-
-
-    const thinking =
-      document.getElementById(
-        "eid-thinking"
-      );
-
-    if (thinking) {
-      thinking.remove();
-    }
-
-
-    if (!response.ok) {
-      throw new Error(
-        data.error ||
-        "Eid AI error."
-      );
-    }
-
-
-    addEidMessage(
-      data.answer,
-      false
+    addAI(
+      q,
+      'user'
     );
 
-  } catch (error) {
-    const thinking =
-      document.getElementById(
-        "eid-thinking"
+    $('aiInput').value = '';
+
+    const load =
+      document.createElement(
+        'div'
       );
 
-    if (thinking) {
-      thinking.remove();
+    load.className =
+      'ai-msg bot';
+
+    load.textContent =
+      'Thinking...';
+
+    $('aiMessages')
+      .appendChild(
+        load
+      );
+
+    try {
+      const r =
+        await fetch(
+          '/api/ai',
+          {
+            method: 'POST',
+
+            headers: {
+              'Content-Type':
+                'application/json'
+            },
+
+            body:
+              JSON.stringify({
+                question: q
+              })
+          }
+        );
+
+      const d =
+        await r.json();
+
+      load.textContent =
+        d.answer ||
+        d.error ||
+        'No answer.';
+
+    } catch (err) {
+      load.textContent =
+        'Eid AI is unavailable right now.';
     }
 
-    addEidMessage(
-      "Eid AI is unavailable right now.",
-      false
-    );
+    $('aiMessages')
+      .scrollTop =
+      $('aiMessages')
+        .scrollHeight;
+  };
 
-    console.error(error);
-  }
-}
-
-
-function addEidMessage(
-  text,
-  user,
-  id = ""
+function addAI(
+  t,
+  type
 ) {
-  const box =
-    document.createElement("div");
-
-  box.className =
-    "eid-message " +
-    (
-      user
-        ? "eid-user"
-        : "eid-ai"
+  const d =
+    document.createElement(
+      'div'
     );
 
-  if (id) {
-    box.id = id;
-  }
+  d.className =
+    'ai-msg ' +
+    type;
 
-  box.textContent = text;
+  d.textContent = t;
 
-  $("eidMessages")
-    .appendChild(box);
+  $('aiMessages')
+    .appendChild(
+      d
+    );
 
-  $("eidMessages").scrollTop =
-    $("eidMessages").scrollHeight;
+  $('aiMessages')
+    .scrollTop =
+    $('aiMessages')
+      .scrollHeight;
 }
-
-
-$("eidSend").onclick =
-  askEid;
-
-
-$("eidQuestion").addEventListener(
-  "keydown",
-  event => {
-
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey
-    ) {
-      event.preventDefault();
-
-      askEid();
-    }
-  }
-);
-
-
-/* =========================
-   INITIALIZATION
-========================= */
-
-setupWhiteboard();
-
-
-socket.on(
-  "connect",
-  () => {
-    console.log(
-      "StudyConnect connected:",
-      socket.id
-    );
-  }
-);
-
-
-socket.on(
-  "room-error",
-  message => {
-    showMessage(message);
-  }
-);
