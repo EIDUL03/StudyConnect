@@ -1,13 +1,14 @@
 {
   "name": "studyconnect",
-  "version": "1.0.0",
-  "description": "StudyConnect - Online Study Room",
+  "version": "2.0.0",
+  "description": "StudyConnect - Online collaborative study rooms with Eid AI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.2",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "openai": "^5.0.0"
   }
 }
