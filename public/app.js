@@ -807,30 +807,13 @@ function setupWhiteboard() {
         whiteboardCanvas
           .getBoundingClientRect();
 
-      /*
-        IMPORTANT:
-        The canvas may be displayed smaller/larger
-        than its internal 900x500 drawing area.
-
-        Convert the physical pointer position
-        into the canvas's internal coordinates.
-      */
-
-      const scaleX =
-        whiteboardCanvas.width /
-        rect.width;
-
-      const scaleY =
-        whiteboardCanvas.height /
-        rect.height;
-
       lastX =
-        (event.clientX - rect.left) *
-        scaleX;
+        event.clientX -
+        rect.left;
 
       lastY =
-        (event.clientY - rect.top) *
-        scaleY;
+        event.clientY -
+        rect.top;
     }
   );
 
@@ -850,26 +833,13 @@ function setupWhiteboard() {
         whiteboardCanvas
           .getBoundingClientRect();
 
-      /*
-        Convert displayed phone coordinates
-        back to the real canvas coordinates.
-      */
-
-      const scaleX =
-        whiteboardCanvas.width /
-        rect.width;
-
-      const scaleY =
-        whiteboardCanvas.height /
-        rect.height;
-
       const x =
-        (event.clientX - rect.left) *
-        scaleX;
+        event.clientX -
+        rect.left;
 
       const y =
-        (event.clientY - rect.top) *
-        scaleY;
+        event.clientY -
+        rect.top;
 
 
       drawLine(
@@ -900,13 +870,6 @@ function setupWhiteboard() {
 
   whiteboardCanvas.addEventListener(
     "pointerup",
-    () => {
-      drawing = false;
-    }
-  );
-
-  whiteboardCanvas.addEventListener(
-    "pointercancel",
     () => {
       drawing = false;
     }
