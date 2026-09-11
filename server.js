@@ -12,7 +12,11 @@ const PORT = process.env.PORT || 3000;
 
 const MAX_STUDENTS = 50;
 
+// Keep disconnected rooms alive temporarily.
+const ROOM_GRACE_PERIOD = 5 * 60 * 1000;
+
 const rooms = new Map();
+const roomDeleteTimers = new Map();
 
 
 // =====================================
@@ -37,12 +41,37 @@ function generateRoomCode() {
 
 
 // =====================================
+// CANCEL ROOM DELETE TIMER
+// =====================================
+
+function cancelRoomDeleteTimer(roomCode) {
+
+  const timer =
+    roomDeleteTimers.get(roomCode);
+
+  if (timer) {
+
+    clearTimeout(timer);
+
+    roomDeleteTimers.delete(roomCode);
+
+    console.log(
+      `Room ${roomCode} delete timer cancelled.`
+    );
+
+  }
+
+}
+
+
+// =====================================
 // SEND ROOM STATE
 // =====================================
 
 function sendRoomState(roomCode) {
 
-  const room = rooms.get(roomCode);
+  const room =
+    rooms.get(roomCode);
 
   if (!room) {
     return;
@@ -74,12 +103,14 @@ function sendRoomState(roomCode) {
         participant.canUpload,
 
       canScreenShare:
-        participant.canScreenShare
+        participant.canScreenShare,
+
+      connected:
+        participant.connected !== false
 
     });
 
   }
-
 
   io.to(roomCode).emit(
     "room-state",
@@ -123,9 +154,11 @@ io.on("connection", (socket) => {
     "create-room",
     (requestedCode, requestedName) => {
 
-      let roomCode = requestedCode;
+      let roomCode =
+        requestedCode;
 
-      let name = requestedName;
+      let name =
+        requestedName;
 
 
       if (
@@ -163,17 +196,20 @@ io.on("connection", (socket) => {
 
       const room = {
 
-        hostId: socket.id,
+        hostId:
+          socket.id,
 
-        participants: new Map(),
+        participants:
+          new Map(),
 
         whiteboardWriterId:
           socket.id,
 
-        whiteboardData: [],
+        whiteboardData:
+          [],
 
-        // Only one person can share screen
-        screenSharerId: null
+        screenSharerId:
+          null
 
       };
 
@@ -182,15 +218,23 @@ io.on("connection", (socket) => {
         socket.id,
         {
 
-          name: name,
+          name:
+            name,
 
-          canWhiteboard: true,
+          canWhiteboard:
+            true,
 
-          canAudio: true,
+          canAudio:
+            true,
 
-          canUpload: true,
+          canUpload:
+            true,
 
-          canScreenShare: true
+          canScreenShare:
+            true,
+
+          connected:
+            true
 
         }
       );
@@ -202,7 +246,15 @@ io.on("connection", (socket) => {
       );
 
 
-      socket.join(roomCode);
+      cancelRoomDeleteTimer(
+        roomCode
+      );
+
+
+      socket.join(
+        roomCode
+      );
+
 
       socket.roomCode =
         roomCode;
@@ -212,7 +264,7 @@ io.on("connection", (socket) => {
 
 
       console.log(
-        `Room ${roomCode} created by ${name}`
+        `Room ${roomCode} created by ${name} (${socket.id})`
       );
 
 
@@ -267,11 +319,21 @@ io.on("connection", (socket) => {
         .substring(0, 30);
 
 
+      console.log(
+        `JOIN REQUEST: ${name} (${socket.id}) -> room ${roomCode}`
+      );
+
+
       const room =
         rooms.get(roomCode);
 
 
       if (!room) {
+
+        console.log(
+          `JOIN FAILED: room ${roomCode} does not exist.`
+        );
+
 
         socket.emit(
           "room-error",
@@ -283,6 +345,14 @@ io.on("connection", (socket) => {
       }
 
 
+      // A room that was temporarily disconnected
+      // is active again.
+
+      cancelRoomDeleteTimer(
+        roomCode
+      );
+
+
       // =================================
       // MAXIMUM 50 STUDENTS
       // =================================
@@ -292,12 +362,23 @@ io.on("connection", (socket) => {
         MAX_STUDENTS
       ) {
 
-        socket.emit(
-          "room-error",
-          "Room is full. Maximum 50 students are allowed."
-        );
+        // Allow a reconnecting user to reclaim
+        // their old participant slot.
 
-        return;
+        if (!room.participants.has(socket.id)) {
+
+          socket.emit(
+            "room-error",
+            "Room is full. Maximum 50 students are allowed."
+          );
+
+          console.log(
+            `JOIN FAILED: room ${roomCode} is full.`
+          );
+
+          return;
+
+        }
 
       }
 
@@ -306,23 +387,32 @@ io.on("connection", (socket) => {
         socket.id,
         {
 
-          name: name,
+          name:
+            name,
 
-          canWhiteboard: false,
+          canWhiteboard:
+            false,
 
-          canAudio: true,
+          canAudio:
+            true,
 
-          canUpload: false,
+          canUpload:
+            false,
 
-          // Screen sharing disabled
-          // until host allows it
-          canScreenShare: false
+          canScreenShare:
+            false,
+
+          connected:
+            true
 
         }
       );
 
 
-      socket.join(roomCode);
+      socket.join(
+        roomCode
+      );
+
 
       socket.roomCode =
         roomCode;
@@ -332,11 +422,13 @@ io.on("connection", (socket) => {
 
 
       console.log(
-        `${name} joined room ${roomCode}`
+        `JOIN SUCCESS: ${name} (${socket.id}) joined room ${roomCode}`
       );
 
 
-      socket.to(roomCode).emit(
+      socket.to(
+        roomCode
+      ).emit(
         "user-joined"
       );
 
@@ -612,8 +704,6 @@ io.on("connection", (socket) => {
       }
 
 
-      // Only host can control
-      // screen sharing permission.
       if (
         socket.id !==
         room.hostId
@@ -648,9 +738,6 @@ io.on("connection", (socket) => {
           allowed;
 
 
-      // If permission is removed
-      // while that student is sharing,
-      // stop their screen share.
       if (
         !allowed &&
         room.screenSharerId ===
@@ -721,7 +808,6 @@ io.on("connection", (socket) => {
       }
 
 
-      // Host is always allowed.
       const allowed =
         socket.id ===
           room.hostId ||
@@ -740,8 +826,6 @@ io.on("connection", (socket) => {
       }
 
 
-      // Only one screen sharer
-      // at a time.
       if (
         room.screenSharerId &&
         room.screenSharerId !==
@@ -767,6 +851,7 @@ io.on("connection", (socket) => {
       ).emit(
         "screen-share-started",
         {
+
           userId:
             socket.id,
 
@@ -1006,13 +1091,27 @@ io.on("connection", (socket) => {
       }
 
 
-      const wasHost =
-        socket.id ===
-        room.hostId;
+      const participant =
+        room.participants.get(
+          socket.id
+        );
+
+
+      if (participant) {
+
+        participant.connected =
+          false;
+
+      }
+
+
+      console.log(
+        `User disconnected: ${socket.id} from room ${roomCode}`
+      );
 
 
       // =================================
-      // STOP SCREEN SHARE IF ACTIVE
+      // STOP SCREEN SHARE
       // =================================
 
       if (
@@ -1037,136 +1136,90 @@ io.on("connection", (socket) => {
       }
 
 
-      // Remove participant
-      room.participants.delete(
-        socket.id
-      );
-
-
       // =================================
-      // HOST LEFT
-      // =================================
-
-      if (wasHost) {
-
-        const remaining =
-          Array.from(
-            room.participants.keys()
-          );
-
-
-        if (
-          remaining.length === 0
-        ) {
-
-          rooms.delete(
-            roomCode
-          );
-
-
-          console.log(
-            `Room ${roomCode} deleted.`
-          );
-
-
-          return;
-
-        }
-
-
-        const newHostId =
-          remaining[0];
-
-
-        room.hostId =
-          newHostId;
-
-
-        const newHost =
-          room.participants.get(
-            newHostId
-          );
-
-
-        newHost.canWhiteboard =
-          true;
-
-        newHost.canAudio =
-          true;
-
-        newHost.canUpload =
-          true;
-
-        newHost.canScreenShare =
-          true;
-
-
-        room.whiteboardWriterId =
-          newHostId;
-
-
-        io.to(
-          roomCode
-        ).emit(
-          "new-host",
-          {
-            hostId:
-              newHostId
-          }
-        );
-
-
-        console.log(
-          `New host for room ${roomCode}: ${newHostId}`
-        );
-
-      }
-
-
-      // =================================
-      // WHITEBOARD WRITER LEFT
+      // KEEP ROOM ALIVE TEMPORARILY
       // =================================
 
       if (
-        socket.id ===
-        room.whiteboardWriterId
+        roomDeleteTimers.has(roomCode)
       ) {
 
-        room.whiteboardWriterId =
-          room.hostId;
-
-
-        for (
-          const [
-            participantId,
-            participant
-          ]
-          of room.participants
-        ) {
-
-          participant.canWhiteboard =
-            participantId ===
-            room.hostId;
-
-        }
+        clearTimeout(
+          roomDeleteTimers.get(
+            roomCode
+          )
+        );
 
       }
 
 
-      socket.to(
-        roomCode
-      ).emit(
-        "user-left"
+      const timer =
+        setTimeout(
+          () => {
+
+            const currentRoom =
+              rooms.get(roomCode);
+
+
+            if (!currentRoom) {
+              return;
+            }
+
+
+            // Check whether at least one
+            // participant is connected.
+
+            const connectedParticipants =
+              Array.from(
+                currentRoom.participants.values()
+              )
+              .filter(
+                participant =>
+                  participant.connected !== false
+              );
+
+
+            if (
+              connectedParticipants.length === 0
+            ) {
+
+              rooms.delete(
+                roomCode
+              );
+
+
+              console.log(
+                `Room ${roomCode} deleted after ${ROOM_GRACE_PERIOD / 1000} seconds of inactivity.`
+              );
+
+            }
+
+            else {
+
+              console.log(
+                `Room ${roomCode} is still active.`
+              );
+
+            }
+
+
+            roomDeleteTimers.delete(
+              roomCode
+            );
+
+          },
+          ROOM_GRACE_PERIOD
+        );
+
+
+      roomDeleteTimers.set(
+        roomCode,
+        timer
       );
 
 
       sendRoomState(
         roomCode
-      );
-
-
-      console.log(
-        `User ${socket.id} left room ${roomCode}`
       );
 
     }
