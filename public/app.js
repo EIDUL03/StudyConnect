@@ -130,11 +130,7 @@ async function enter(code, host, serverUsers) {
   renderParticipants();
   setupWhiteboard();
 
-  const others = [...users.values()].filter(
-    u => u.socketId && u.token !== myToken
-  );
-
-  others.forEach(u => connectPeer(u, true));
+  ensurePeerConnections();
 }
 
 function updateControls() {
@@ -332,8 +328,118 @@ function rtcConfig() {
       {
         urls: 'stun:stun.cloudflare.com:3478'
       }
-    ]
+    ],
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require'
   };
+}
+
+/*
+  WebRTC signaling notes
+  ----------------------
+  1. Only one side creates the offer. The token decides who is the
+     initiator, so both devices do not create competing offers.
+  2. Signals are queued if the participant list has not arrived yet.
+  3. ICE candidates are queued until the remote description exists.
+  4. Failed/disconnected connections can be rebuilt.
+*/
+
+const pendingSignals = new Map();
+const pendingCandidates = new Map();
+
+function queueSignal(from, data) {
+  if (!from || !data) return;
+
+  const list =
+    pendingSignals.get(from) || [];
+
+  list.push(data);
+  pendingSignals.set(from, list);
+}
+
+function queueCandidate(from, candidate) {
+  if (!from || !candidate) return;
+
+  const list =
+    pendingCandidates.get(from) || [];
+
+  list.push(candidate);
+  pendingCandidates.set(from, list);
+}
+
+function findUserBySocket(socketId) {
+  return [...users.values()].find(
+    u => u.socketId === socketId
+  );
+}
+
+function shouldInitiate(u) {
+  if (!u || !u.token || !myToken) {
+    return false;
+  }
+
+  return String(myToken) < String(u.token);
+}
+
+function sendSignal(u, data) {
+  if (!u?.socketId || !data) return;
+
+  socket.emit('signal', {
+    to: u.socketId,
+    data
+  });
+}
+
+async function flushPendingSignals(socketId) {
+  const u = findUserBySocket(socketId);
+
+  if (!u) return;
+
+  const list =
+    pendingSignals.get(socketId) || [];
+
+  pendingSignals.delete(socketId);
+
+  for (const data of list) {
+    try {
+      await handleSignal(u, socketId, data);
+    } catch (e) {
+      console.warn(
+        'Queued WebRTC signal failed:',
+        e
+      );
+    }
+  }
+}
+
+async function flushPendingCandidates(
+  socketId,
+  pc
+) {
+  if (
+    !pc ||
+    !pc.remoteDescription
+  ) {
+    return;
+  }
+
+  const list =
+    pendingCandidates.get(socketId) || [];
+
+  pendingCandidates.delete(socketId);
+
+  for (const candidate of list) {
+    try {
+      await pc.addIceCandidate(
+        candidate
+      );
+    } catch (e) {
+      console.warn(
+        'Queued ICE candidate failed:',
+        e
+      );
+    }
+  }
 }
 
 async function connectPeer(u, initiator) {
@@ -342,149 +448,388 @@ async function connectPeer(u, initiator) {
     !u.socketId ||
     u.token === myToken
   ) {
-    return;
+    return null;
   }
 
-  let p = peers.get(u.token);
+  let pc = peers.get(u.token);
 
-  if (p) {
-    return p;
+  if (pc) {
+    return pc;
   }
 
-  const pc =
+  pc =
     new RTCPeerConnection(
       rtcConfig()
     );
 
   peers.set(u.token, pc);
 
-  localStream
-    ?.getTracks()
-    .forEach(t => {
-      pc.addTrack(t, localStream);
-    });
-
-  pc.onicecandidate = e => {
-    if (e.candidate) {
-      socket.emit('signal', {
-        to: u.socketId,
-        data: {
-          type: 'candidate',
-          candidate: e.candidate
+  if (localStream) {
+    localStream
+      .getTracks()
+      .forEach(track => {
+        try {
+          pc.addTrack(
+            track,
+            localStream
+          );
+        } catch (e) {
+          console.warn(
+            'Could not add local track:',
+            e
+          );
         }
       });
+  }
+
+  pc.onicecandidate = e => {
+    if (!e.candidate) return;
+
+    const current =
+      users.get(u.token);
+
+    if (!current?.socketId) {
+      return;
     }
+
+    sendSignal(
+      current,
+      {
+        type: 'candidate',
+        candidate: e.candidate
+      }
+    );
   };
 
   pc.ontrack = e => {
-    if (e.streams[0]) {
-      remoteStreams.set(
-        u.token,
-        e.streams[0]
-      );
+    const stream =
+      e.streams?.[0];
 
-      makeTile(u);
-    }
+    if (!stream) return;
+
+    remoteStreams.set(
+      u.token,
+      stream
+    );
+
+    makeTile(
+      users.get(u.token) || u
+    );
   };
 
   pc.onconnectionstatechange = () => {
-    if (
-      ['failed', 'closed'].includes(
-        pc.connectionState
-      )
-    ) {
-      pc.close();
+    const state =
+      pc.connectionState;
 
-      peers.delete(u.token);
-      remoteStreams.delete(u.token);
+    if (state === 'connected') {
+      console.log(
+        'WebRTC connected:',
+        u.name
+      );
+      return;
+    }
+
+    if (
+      state === 'failed' ||
+      state === 'closed'
+    ) {
+      if (peers.get(u.token) === pc) {
+        peers.delete(u.token);
+      }
+
+      remoteStreams.delete(
+        u.token
+      );
+
+      pendingCandidates.delete(
+        u.socketId
+      );
+
+      try {
+        pc.close();
+      } catch (e) {}
 
       renderVideos();
+
+      setTimeout(() => {
+        const current =
+          users.get(u.token);
+
+        if (
+          current?.connected &&
+          current.socketId &&
+          !peers.has(u.token)
+        ) {
+          connectPeer(
+            current,
+            shouldInitiate(current)
+          );
+        }
+      }, 1200);
     }
   };
 
-  if (initiator) {
-    const offer =
-      await pc.createOffer();
+  pc.oniceconnectionstatechange = () => {
+    const state =
+      pc.iceConnectionState;
 
-    await pc.setLocalDescription(
-      offer
-    );
-
-    socket.emit('signal', {
-      to: u.socketId,
-      data: {
-        type: 'offer',
-        sdp: pc.localDescription
+    if (
+      state === 'failed'
+    ) {
+      try {
+        pc.restartIce();
+      } catch (e) {
+        console.warn(
+          'ICE restart unavailable:',
+          e
+        );
       }
-    });
+    }
+  };
+
+  if (
+    initiator &&
+    shouldInitiate(u)
+  ) {
+    try {
+      const offer =
+        await pc.createOffer();
+
+      await pc.setLocalDescription(
+        offer
+      );
+
+      const current =
+        users.get(u.token);
+
+      if (current?.socketId) {
+        sendSignal(
+          current,
+          {
+            type: 'offer',
+            sdp:
+              pc.localDescription
+          }
+        );
+      }
+    } catch (e) {
+      console.warn(
+        'Could not create WebRTC offer:',
+        e
+      );
+    }
   }
 
   return pc;
 }
 
-socket.on(
-  'signal',
-  async ({ from, data }) => {
-    const u =
-      [...users.values()].find(
-        x => x.socketId === from
-      );
+async function handleSignal(
+  u,
+  from,
+  data
+) {
+  if (
+    !u ||
+    !data
+  ) {
+    return;
+  }
 
-    if (!u) return;
+  let pc =
+    peers.get(u.token);
 
-    let pc =
-      peers.get(u.token);
+  if (
+    data.type === 'offer'
+  ) {
+    if (
+      shouldInitiate(u) &&
+      pc?.signalingState ===
+        'have-local-offer'
+    ) {
+      return;
+    }
 
-    if (data.type === 'offer') {
-      if (!pc) {
-        pc =
-          await connectPeer(
-            u,
-            false
-          );
+    if (!pc) {
+      pc =
+        await connectPeer(
+          u,
+          false
+        );
+    }
+
+    if (!pc) return;
+
+    try {
+      if (
+        pc.signalingState ===
+        'have-local-offer'
+      ) {
+        await pc.setLocalDescription({
+          type: 'rollback'
+        });
       }
 
       await pc.setRemoteDescription(
         data.sdp
       );
 
-      const ans =
+      await flushPendingCandidates(
+        from,
+        pc
+      );
+
+      const answer =
         await pc.createAnswer();
 
       await pc.setLocalDescription(
-        ans
+        answer
       );
 
-      socket.emit('signal', {
-        to: from,
-        data: {
-          type: 'answer',
-          sdp: pc.localDescription
-        }
-      });
+      const current =
+        users.get(u.token);
+
+      if (current?.socketId) {
+        sendSignal(
+          current,
+          {
+            type: 'answer',
+            sdp:
+              pc.localDescription
+          }
+        );
+      }
+    } catch (e) {
+      console.warn(
+        'WebRTC offer handling failed:',
+        e
+      );
     }
 
-    else if (
-      data.type === 'answer' &&
-      pc
-    ) {
+    return;
+  }
+
+  if (
+    data.type === 'answer' &&
+    pc
+  ) {
+    try {
+      if (
+        pc.signalingState !==
+        'have-local-offer'
+      ) {
+        return;
+      }
+
       await pc.setRemoteDescription(
         data.sdp
       );
+
+      await flushPendingCandidates(
+        from,
+        pc
+      );
+    } catch (e) {
+      console.warn(
+        'WebRTC answer handling failed:',
+        e
+      );
     }
 
-    else if (
-      data.type === 'candidate' &&
-      pc
+    return;
+  }
+
+  if (
+    data.type === 'candidate'
+  ) {
+    if (
+      !pc ||
+      !pc.remoteDescription
     ) {
-      try {
-        await pc.addIceCandidate(
-          data.candidate
-        );
-      } catch (e) {}
+      queueCandidate(
+        from,
+        data.candidate
+      );
+      return;
+    }
+
+    try {
+      await pc.addIceCandidate(
+        data.candidate
+      );
+    } catch (e) {
+      console.warn(
+        'ICE candidate failed:',
+        e
+      );
+    }
+  }
+}
+
+socket.on(
+  'signal',
+  async ({ from, data }) => {
+    if (!from || !data) {
+      return;
+    }
+
+    const u =
+      findUserBySocket(from);
+
+    /*
+      A new student can send an offer before the existing clients
+      receive their participants event. Keep the signal instead of
+      dropping it.
+    */
+    if (!u) {
+      queueSignal(
+        from,
+        data
+      );
+      return;
+    }
+
+    try {
+      await handleSignal(
+        u,
+        from,
+        data
+      );
+    } catch (e) {
+      console.warn(
+        'WebRTC signal handling failed:',
+        e
+      );
     }
   }
 );
+
+function ensurePeerConnections() {
+  [...users.values()]
+    .filter(
+      u =>
+        u.connected &&
+        u.socketId &&
+        u.token !== myToken
+    )
+    .forEach(u => {
+      if (!peers.has(u.token)) {
+        connectPeer(
+          u,
+          shouldInitiate(u)
+        );
+      }
+
+      if (
+        pendingSignals.has(
+          u.socketId
+        )
+      ) {
+        flushPendingSignals(
+          u.socketId
+        );
+      }
+    });
+}
 
 function renderParticipants() {
   const list =
@@ -617,6 +962,8 @@ socket.on(
     renderVideos();
     renderParticipants();
     updateControls();
+
+    ensurePeerConnections();
   }
 );
 
