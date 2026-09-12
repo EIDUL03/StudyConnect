@@ -453,33 +453,87 @@ async function connectPeer(u, initiator) {
 
   let pc = peers.get(u.token);
 
+  /*
+    If the peer already exists, it may have been created before
+    getUserMedia() finished. Attach the local tracks now.
+  */
   if (pc) {
+    if (localStream) {
+      const senders = pc.getSenders();
+
+      localStream.getTracks().forEach(track => {
+        const existing = senders.find(
+          s => s.track?.kind === track.kind
+        );
+
+        if (!existing) {
+          try {
+            pc.addTrack(track, localStream);
+          } catch (e) {
+            console.warn(
+              'Could not add local track:',
+              e
+            );
+          }
+        }
+      });
+    }
+
+    if (
+      initiator &&
+      shouldInitiate(u) &&
+      pc.signalingState === 'stable'
+    ) {
+      try {
+        const offer = await pc.createOffer();
+
+        await pc.setLocalDescription(offer);
+
+        const current = users.get(u.token);
+
+        if (
+          current?.socketId &&
+          pc.localDescription
+        ) {
+          sendSignal(
+            current,
+            {
+              type: 'offer',
+              sdp: pc.localDescription
+            }
+          );
+        }
+      } catch (e) {
+        console.warn(
+          'Could not create WebRTC offer:',
+          e
+        );
+      }
+    }
+
     return pc;
   }
 
-  pc =
-    new RTCPeerConnection(
-      rtcConfig()
-    );
+  pc = new RTCPeerConnection(
+    rtcConfig()
+  );
 
   peers.set(u.token, pc);
 
   if (localStream) {
-    localStream
-      .getTracks()
-      .forEach(track => {
-        try {
-          pc.addTrack(
-            track,
-            localStream
-          );
-        } catch (e) {
-          console.warn(
-            'Could not add local track:',
-            e
-          );
-        }
-      });
+    localStream.getTracks().forEach(track => {
+      try {
+        pc.addTrack(
+          track,
+          localStream
+        );
+      } catch (e) {
+        console.warn(
+          'Could not add local track:',
+          e
+        );
+      }
+    });
   }
 
   pc.onicecandidate = e => {
@@ -526,6 +580,7 @@ async function connectPeer(u, initiator) {
         'WebRTC connected:',
         u.name
       );
+
       return;
     }
 
@@ -533,8 +588,12 @@ async function connectPeer(u, initiator) {
       state === 'failed' ||
       state === 'closed'
     ) {
-      if (peers.get(u.token) === pc) {
-        peers.delete(u.token);
+      if (
+        peers.get(u.token) === pc
+      ) {
+        peers.delete(
+          u.token
+        );
       }
 
       remoteStreams.delete(
@@ -573,9 +632,7 @@ async function connectPeer(u, initiator) {
     const state =
       pc.iceConnectionState;
 
-    if (
-      state === 'failed'
-    ) {
+    if (state === 'failed') {
       try {
         pc.restartIce();
       } catch (e) {
@@ -602,7 +659,10 @@ async function connectPeer(u, initiator) {
       const current =
         users.get(u.token);
 
-      if (current?.socketId) {
+      if (
+        current?.socketId &&
+        pc.localDescription
+      ) {
         sendSignal(
           current,
           {
@@ -622,7 +682,6 @@ async function connectPeer(u, initiator) {
 
   return pc;
 }
-
 async function handleSignal(
   u,
   from,
