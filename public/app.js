@@ -329,7 +329,7 @@ function rtcConfig() {
         urls: 'stun:stun.cloudflare.com:3478'
       }
     ],
-    bundlePolicy: 'max-bundle',
+    bundlePolicy: 'balanced',
     rtcpMuxPolicy: 'require'
   };
 }
