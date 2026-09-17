@@ -569,7 +569,7 @@ button:disabled{
   }
 
   .room-private{
-    display:none
+    display:block
   }
 
   .board-tools{
